@@ -85,6 +85,13 @@ else
   Q = @
 endif
 
+ifeq ("$(origin FWVER)", "command line")
+  PLAT_FW_VERSION := $(FWVER)
+endif
+ifeq ("$(origin SPL_FWVER)", "command line")
+  PLAT_SPL_FW_VERSION := $(SPL_FWVER)
+endif
+
 # If the user is running make -s (silent mode), suppress echoing of
 # commands
 
@@ -651,6 +658,7 @@ HAVE_VENDOR_COMMON_LIB = $(if $(wildcard $(srctree)/board/$(VENDOR)/common/Makef
 libs-y += lib/
 libs-$(HAVE_VENDOR_COMMON_LIB) += board/$(VENDOR)/common/
 libs-$(CONFIG_OF_EMBED) += dts/
+ifneq ($(CONFIG_SPL_BUILD)$(CONFIG_SPL_DECOMP_HEADER),yy)
 libs-y += fs/
 libs-y += net/
 libs-y += disk/
@@ -700,6 +708,7 @@ libs-y += common/
 libs-y += env/
 libs-$(CONFIG_API) += api/
 libs-$(CONFIG_HAS_POST) += post/
+endif
 libs-y += test/
 libs-y += test/dm/
 libs-$(CONFIG_UT_ENV) += test/env/
@@ -1367,6 +1376,12 @@ ifeq ($(CONFIG_SUPPORT_USBPLUG),)
 define filechk_version.h
 	(echo \#define PLAIN_VERSION \"$(UBOOTRELEASE)\"; \
 	echo \#define U_BOOT_VERSION \"U-Boot \" PLAIN_VERSION; \
+	if [ -n "$(PLAT_SPL_FW_VERSION)" ]; then \
+		echo \#define BUILD_SPL_TAG \"$(PLAT_SPL_FW_VERSION)\"; \
+	fi; \
+	if [ -n "$(PLAT_FW_VERSION)" ]; then \
+        echo \#define BUILD_TAG \"$(PLAT_FW_VERSION)\"; \
+	fi; \
 	echo \#define CC_VERSION_STRING \"$$(LC_ALL=C $(CC) --version | head -n 1)\"; \
 	echo \#define LD_VERSION_STRING \"$$(LC_ALL=C $(LD) --version | head -n 1)\"; )
 endef
@@ -1374,6 +1389,12 @@ else
 define filechk_version.h
         (echo \#define PLAIN_VERSION \"$(UBOOTRELEASE)\"; \
         echo \#define U_BOOT_VERSION \"USB-PLUG \" PLAIN_VERSION; \
+        if [ -n "$(PLAT_SPL_FW_VERSION)" ]; then \
+            echo \#define BUILD_SPL_TAG \"$(PLAT_SPL_FW_VERSION)\"; \
+        fi; \
+        if [ -n "$(PLAT_FW_VERSION)" ]; then \
+            echo \#define BUILD_TAG \"$(PLAT_FW_VERSION)\"; \
+        fi; \
         echo \#define CC_VERSION_STRING \"$$(LC_ALL=C $(CC) --version | head -n 1)\"; \
         echo \#define LD_VERSION_STRING \"$$(LC_ALL=C $(LD) --version | head -n 1)\"; )
 endef
@@ -1483,7 +1504,7 @@ checkarmreloc: u-boot
 		false; \
 	fi
 
-envtools: scripts_basic
+envtools: scripts_basic $(version_h) $(timestamp_h)
 	$(Q)$(MAKE) $(build)=tools/env
 
 tools-only: scripts_basic $(version_h) $(timestamp_h)
@@ -1515,7 +1536,7 @@ CLEAN_DIRS  += $(MODVERDIR) \
 			$(filter-out include, $(shell ls -1 $d 2>/dev/null))))
 
 CLEAN_FILES += include/bmp_logo.h include/bmp_logo_data.h \
-	       boot* u-boot* MLO* SPL System.map fit-dtb.blob *.bin *.img
+	       boot* u-boot* MLO* SPL System.map fit-dtb.blob *.bin *.img *.gz .cc
 
 # Directories & files removed with 'make mrproper'
 MRPROPER_DIRS  += include/config include/generated spl tpl \
@@ -1699,6 +1720,13 @@ endif
 	$(Q)$(MAKE) KBUILD_MODULES=$(if $(CONFIG_MODULES),1)   \
 	$(build)=$(build-dir) $(@:.ko=.o)
 	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.modpost
+
+quiet_cmd_genenv = GENENV $@
+cmd_genenv = $(OBJCOPY) --dump-section .rodata.default_environment=$@ env/common.o; \
+	sed --in-place -e 's/\x00/\x0A/g' $@
+
+u-boot-initial-env: u-boot.bin
+	$(call if_changed,genenv)
 
 # FIXME Should go into a make.lib or something
 # ===========================================================================

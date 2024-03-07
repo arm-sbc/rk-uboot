@@ -20,6 +20,7 @@ obj-$(CONFIG_$(SPL_TPL_)SPI_FLASH_SUPPORT) += mtd/spi/
 obj-$(CONFIG_$(SPL_TPL_)SPI_SUPPORT) += spi/
 obj-$(CONFIG_$(SPL_TPL_)TIMER) += timer/
 obj-$(CONFIG_$(SPL_TPL_)IRQ) += irq/
+obj-$(CONFIG_$(SPL_TPL_)DM_VIDEO) += video/
 
 ifndef CONFIG_TPL_BUILD
 ifdef CONFIG_SPL_BUILD
@@ -35,6 +36,7 @@ obj-$(CONFIG_SPL_POWER_SUPPORT) += power/
 obj-$(CONFIG_SPL_DM_PMIC) += power/pmic/
 obj-$(CONFIG_SPL_DM_REGULATOR) += power/regulator/
 obj-$(CONFIG_SPL_DM_FUEL_GAUGE) += power/fuel_gauge/
+obj-$(CONFIG_SPL_DM_FUEL_GAUGE) += power/charge/
 obj-$(CONFIG_SPL_PWM_SUPPORT) += pwm/
 obj-$(CONFIG_SPL_MTD_SUPPORT) += mtd/
 obj-$(CONFIG_SPL_ONENAND_SUPPORT) += mtd/onenand/
@@ -90,6 +92,7 @@ obj-$(CONFIG_NVME) += nvme/
 obj-$(CONFIG_RKNAND) += rknand/
 obj-$(CONFIG_RKFLASH) += rkflash/
 obj-y += pcmcia/
+obj-$(CONFIG_DM_POWER_DELIVERY) += power/power_delivery/
 obj-y += dfu/
 obj-$(CONFIG_X86) += pch/
 obj-y += phy/marvell/
@@ -99,7 +102,6 @@ obj-y += sound/
 obj-y += spmi/
 obj-y += sysreset/
 obj-y += tpm/
-obj-y += video/
 obj-y += watchdog/
 obj-$(CONFIG_QE) += qe/
 obj-$(CONFIG_U_QE) += qe/
@@ -111,6 +113,7 @@ obj-y += input/
 obj-y += soc/
 obj-$(CONFIG_REMOTEPROC) += remoteproc/
 obj-y += thermal/
+obj-y += ufs/
 
 obj-$(CONFIG_MACH_PIC32) += ddr/microchip/
 endif

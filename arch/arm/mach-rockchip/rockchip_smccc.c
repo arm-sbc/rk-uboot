@@ -13,9 +13,11 @@
 #ifdef CONFIG_ARM64
 #define ARM_PSCI_1_0_SYSTEM_SUSPEND	ARM_PSCI_1_0_FN64_SYSTEM_SUSPEND
 #define ARM_PSCI_0_2_CPU_ON		ARM_PSCI_0_2_FN64_CPU_ON
+#define ARM_PSCI_0_2_CPU_OFF		ARM_PSCI_0_2_FN_CPU_OFF
 #else
 #define ARM_PSCI_1_0_SYSTEM_SUSPEND	ARM_PSCI_1_0_FN_SYSTEM_SUSPEND
 #define ARM_PSCI_0_2_CPU_ON		ARM_PSCI_0_2_FN_CPU_ON
+#define ARM_PSCI_0_2_CPU_OFF		ARM_PSCI_0_2_FN_CPU_OFF
 #endif
 
 #define SIZE_PAGE(n)	((n) << 12)
@@ -36,6 +38,15 @@ int psci_cpu_on(unsigned long cpuid, unsigned long entry_point)
 	struct arm_smccc_res res;
 
 	res = __invoke_sip_fn_smc(ARM_PSCI_0_2_CPU_ON, cpuid, entry_point, 0);
+
+	return res.a0;
+}
+
+int psci_cpu_off(uint32_t state)
+{
+	struct arm_smccc_res res;
+
+	res = __invoke_sip_fn_smc(ARM_PSCI_0_2_CPU_OFF, state, 0, 0);
 
 	return res.a0;
 }
@@ -61,11 +72,21 @@ int sip_smc_set_suspend_mode(unsigned long ctrl,
 	return res.a0;
 }
 
-int sip_smc_amp_cfg(unsigned long func, unsigned long arg0, unsigned long arg1)
+int sip_smc_remotectl_config(unsigned long func, unsigned long data)
 {
 	struct arm_smccc_res res;
 
-	res = __invoke_sip_fn_smc(SIP_AMP_CFG, func, arg0, arg1);
+	res = __invoke_sip_fn_smc(SIP_REMOTECTL_CFG, func, data, 0);
+
+	return res.a0;
+}
+
+int sip_smc_amp_cfg(unsigned long func, unsigned long arg0, unsigned long arg1,
+		    unsigned long arg2)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(SIP_AMP_CFG, func, arg0, arg1, arg2, 0, 0, 0, &res);
 	return res.a0;
 }
 
@@ -109,6 +130,14 @@ int sip_smc_secure_reg_write(unsigned long addr_phy, unsigned long val)
 	return res.a0;
 }
 
+int sip_smc_hdcp_config(unsigned long func, unsigned long arg1, unsigned long arg2)
+{
+	struct arm_smccc_res res;
+
+	res = __invoke_sip_fn_smc(SIP_HDCP_CONFIG, func, arg1, arg2);
+	return res.a0;
+}
+
 struct arm_smccc_res sip_smc_get_sip_version(void)
 {
 	return __invoke_sip_fn_smc(SIP_SIP_VERSION, 0, 0, 0);
@@ -132,4 +161,12 @@ int sip_smc_set_sip_version(unsigned long version)
 	}
 
 	return 0;
+}
+
+int sip_smc_mcu_config(unsigned long mcu_id, unsigned long func, unsigned long arg2)
+{
+	struct arm_smccc_res res;
+
+	res = __invoke_sip_fn_smc(SIP_MCU_CFG, mcu_id, func, arg2);
+	return res.a0;
 }

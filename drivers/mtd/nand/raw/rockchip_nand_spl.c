@@ -351,11 +351,11 @@ static int rockchip_nandc_probe(struct udevice *dev)
 	    id[1] == 0xDA || id[1] == 0xAC ||
 	    id[1] == 0xDC || id[1] == 0xA3 ||
 	    id[1] == 0xD3 || id[1] == 0x95 ||
-	    id[1] == 0x48) {
+	    id[1] == 0x48 || id[1] == 0x63) {
 		nand_page_size = 2048;
 		nand_page_num = 64;
 		nand_block_num = 1024;
-		if (id[1] == 0xDC) {
+		if (id[1] == 0xDC || id[1] == 0xAC) {
 			if ((id[0] == 0x2C && id[3] == 0xA6) ||
 			    (id[0] == 0xC2 && id[3] == 0xA2)) {
 				nand_page_size = 4096;
@@ -373,10 +373,18 @@ static int rockchip_nandc_probe(struct udevice *dev)
 			nand_page_num = 128;
 			nand_block_num = 4096;
 		} else if (id[1] == 0xD3) {
+			if ((id[2] == 0xD1 && id[4] == 0x5a) || /* S34ML08G2 */
+			    (id[3] == 0x05 && id[4] == 0x04)) { /* S34ML08G3 */
+				nand_block_num = 8192;
+			} else {
+				nand_page_size = 4096;
+				nand_block_num = 4096;
+			}
+		} else if (id[1] == 0x63 && id[3] == 0x19) { /* IS34ML08G088 */
 			nand_page_size = 4096;
+			nand_page_num = 64;
 			nand_block_num = 4096;
 		}
-
 		g_rk_nand->chipnr = 1;
 		g_rk_nand->databuf = kzalloc(nand_page_size, GFP_KERNEL);
 		if (!g_rk_nand)
@@ -514,6 +522,7 @@ int nand_spl_load_image(u32 offs, u32 size, void *buf)
 {
 	int i;
 	unsigned int page;
+	int force_bad_block_check = 1;
 	unsigned int maxpages = CONFIG_SYS_NAND_SIZE /
 				nand_page_size;
 
@@ -527,18 +536,20 @@ int nand_spl_load_image(u32 offs, u32 size, void *buf)
 		 * Check if we have crossed a block boundary, and if so
 		 * check for bad block.
 		 */
-		if (!(page % nand_page_size)) {
+		if (force_bad_block_check || !(page % nand_page_num)) {
 			/*
 			 * Yes, new block. See if this block is good. If not,
 			 * loop until we find a good block.
 			 */
 			while (is_badblock(page)) {
-				page = page + nand_page_size;
+				page = page + nand_page_num;
 				/* Check i we've reached the end of flash. */
 				if (page >= maxpages)
 					return -EIO;
 			}
 		}
+
+		force_bad_block_check = 0;
 
 		if (nandc_read_page(page, buf) < 0)
 			return -EIO;

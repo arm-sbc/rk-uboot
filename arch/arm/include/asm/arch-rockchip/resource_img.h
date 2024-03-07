@@ -7,36 +7,46 @@
 #ifndef __RESC_IMG_H_
 #define __RESC_IMG_H_
 
-/*
- * resource_image_check_header - check resource image header
- *
- * @rsce_hdr: resource file hdr
- *
- * return 0 on header okay, otherwise failed
- */
-int resource_image_check_header(void *rsce_hdr);
+#include <linux/list.h>
+
+#define MAX_FILE_NAME_LEN		220
+#define MAX_HASH_LEN			32
+#define DTB_SUFFIX			".dtb"
+
+struct resource_file {
+	char		name[MAX_FILE_NAME_LEN];
+	uint32_t	blk_start;
+	uint32_t	blk_offset;
+	char		hash[MAX_HASH_LEN];
+	uint32_t	hash_size;
+	uint32_t	size;		/* in byte */
+	bool		in_ram;
+	struct list_head link;
+};
+
+extern struct list_head entry_head;
 
 /*
- * resource_create_ram_list - create resource file list by data from memory
+ * resource_setup_ram_list() - setup resource file list by given resource image.
  *
- * @dev_desc: blk dev descritpion
- * @rsce_hdr: resource file hdr
+ * @dev_desc: boot device
+ * @hdr: resource file hdr
  *
- * return 0 on header okay, otherwise failed
+ * return 0 on success, otherwise fail.
  */
-int resource_create_ram_list(struct blk_desc *dev_desc, void *rsce_hdr);
+int resource_setup_ram_list(struct blk_desc *dev_desc, void *hdr);
 
 /*
- * rockchip_read_resource_file - read file from resource partition
+ * rockchip_read_resource_file() - read file from resource.
  *
  * @buf: destination buf to store file data
  * @name: file name
- * @offset: blocks offset in the file, 1 block = 512 bytes
- * @len: the size(by bytes) of file to read.
+ * @blk_offset: blocks offset in the file, 1 block = 512 bytes
+ * @len: the size(by bytes) of file to read
  *
- * return negative num on failed, otherwise the file size
+ * return the length of read data.
  */
-int rockchip_read_resource_file(void *buf, const char *name, int offset, int len);
+int rockchip_read_resource_file(void *buf, const char *name, int blk_offset, int len);
 
 /*
  * rockchip_read_resource_dtb() - read dtb file
@@ -46,4 +56,5 @@ int rockchip_read_resource_file(void *buf, const char *name, int offset, int len
  * @hash_size: hash value length
  */
 int rockchip_read_resource_dtb(void *fdt_addr, char **hash, int *hash_size);
+
 #endif

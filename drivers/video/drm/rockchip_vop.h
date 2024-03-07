@@ -7,14 +7,8 @@
 #ifndef _ROCKCHIP_VOP_H_
 #define _ROCKCHIP_VOP_H_
 #include "rockchip_display.h"
+#include <asm/gpio.h>
 
-/*
- * major: IP major vertion, used for IP structure
- * minor: big feature change under same structure
- */
-#define VOP_VERSION(major, minor)	((major) << 8 | (minor))
-#define VOP_MAJOR(version) 	((version) >> 8)
-#define VOP_MINOR(version) 	((version) & 0xff)
 
 #define VOP_REG_SUPPORT(vop, reg) \
 		(reg.mask && \
@@ -163,6 +157,8 @@ enum vop_csc_format {
 #define SCL_MAX_VSKIPLINES		4
 #define MIN_SCL_FT_AFTER_VSKIP		1
 
+#define VOP_PLANE_NO_SCALING	BIT(16)
+
 static inline uint16_t scl_cal_scale(int src, int dst, int shift)
 {
 	return ((src * 2 - 3) << (shift - 1)) / (dst - 1);
@@ -233,10 +229,11 @@ struct vop_reg_data {
 
 struct vop_reg {
 	uint32_t mask;
-	uint32_t offset:12;
+	uint32_t offset:17;
 	uint32_t shift:5;
 	uint32_t begin_minor:4;
 	uint32_t end_minor:4;
+	uint32_t reserved:2;
 	uint32_t major:3;
 	uint32_t write_mask:1;
 };
@@ -301,6 +298,11 @@ struct vop_ctrl {
 
 	struct vop_reg dsp_out_yuv;
 	struct vop_reg dsp_data_swap;
+	struct vop_reg dsp_bg_swap;
+	struct vop_reg dsp_rb_swap;
+	struct vop_reg dsp_rg_swap;
+	struct vop_reg dsp_delta_swap;
+	struct vop_reg dsp_dummy_swap;
 	struct vop_reg dsp_ccir656_avg;
 	struct vop_reg dsp_black;
 	struct vop_reg dsp_blank;
@@ -361,6 +363,12 @@ struct vop_ctrl {
 	struct vop_reg mcu_type;
 	struct vop_reg mcu_rw_bypass_port;
 
+	/* bt1120 */
+	struct vop_reg bt1120_yc_swap;
+	struct vop_reg bt1120_en;
+
+	/* bt656 */
+	struct vop_reg bt656_en;
 
 	struct vop_reg cfg_done;
 };
@@ -404,6 +412,7 @@ struct vop_win {
 	struct vop_reg gate;
 	struct vop_reg enable;
 	struct vop_reg format;
+	struct vop_reg interlace_read;
 	struct vop_reg ymirror;
 	struct vop_reg rb_swap;
 	struct vop_reg act_info;
@@ -474,6 +483,8 @@ struct vop {
 	const struct vop_csc_table *csc_table;
 	const struct vop_csc *win_csc;
 	int win_offset;
+
+	struct gpio_desc mcu_rs_gpio;
 };
 
 static inline void vop_writel(struct vop *vop, uint32_t offset, uint32_t v)

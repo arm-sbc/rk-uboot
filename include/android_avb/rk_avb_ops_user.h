@@ -15,25 +15,25 @@ extern "C" {
 #endif
 
 /* rk used */
-#define PERM_ATTR_DIGEST_SIZE 32
-#define PERM_ATTR_TOTAL_SIZE  1052
-#define VBOOT_KEY_HASH_SIZE   32
-#define ANDROID_VBOOT_LOCK 0
-#define ANDROID_VBOOT_UNLOCK 1
-#define SLOT_NUM 2
-#define CURR_SYSTEM_SLOT_SUFFIX "ab"
-#define VBMETA_MAX_SIZE 65536
-#define ROLLBACK_MAX_SIZE 20
-#define LOCK_MASK 0x1
-#define UNLOCK_DISABLE_MASK 0x2
-#define VBOOT_STATE_SIZE    1000
-#define PERM_ATTR_SUCCESS_FLAG 1
+#define PERM_ATTR_DIGEST_SIZE		32
+#define PERM_ATTR_TOTAL_SIZE		1052
+#define VBOOT_KEY_HASH_SIZE		32
+#define ANDROID_VBOOT_LOCK		0
+#define ANDROID_VBOOT_UNLOCK		1
+#define SLOT_NUM			2
+#define CURR_SYSTEM_SLOT_SUFFIX		"ab"
+#define VBMETA_MAX_SIZE			65536
+#define ROLLBACK_MAX_SIZE		20
+#define LOCK_MASK			(1 << 0)
+#define UNLOCK_DISABLE_MASK		(1 << 1)
+#define VBOOT_STATE_SIZE		1000
+#define PERM_ATTR_SUCCESS_FLAG		1
 /* soc-v use the rsa2048 */
-#define VBOOT_KEY_SIZE   256
-#define RPMB_BASE_ADDR		(64*1024/256)
-#define UBOOT_RB_INDEX_OFFSET 24
-#define TRUST_RB_INDEX_OFFSET 28
-#define ROCHCHIP_RSA_PARAMETER_SIZE 64
+#define VBOOT_KEY_SIZE			256
+#define RPMB_BASE_ADDR			(64*1024/256)
+#define UBOOT_RB_INDEX_OFFSET		24
+#define TRUST_RB_INDEX_OFFSET		28
+#define ROCHCHIP_RSA_PARAMETER_SIZE	64
 
 struct rk_pub_key {
 	u_int32_t rsa_n[ROCHCHIP_RSA_PARAMETER_SIZE];
@@ -335,6 +335,11 @@ int rk_avb_read_perm_attr(uint16_t id, void *pbuf, uint16_t size);
  * Do the device have boot slot
  */
 bool rk_avb_ab_have_bootable_slot(void);
+
+/**
+ * update rollback index
+ */
+int rk_avb_update_stored_rollback_indexes_for_slot(AvbOps* ops, AvbSlotVerifyData* slot_data);
 
 #ifdef __cplusplus
 }

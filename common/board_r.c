@@ -51,12 +51,18 @@
 #include <asm/mmu.h>
 #endif
 #include <asm/sections.h>
+#include <asm/system.h>
 #include <dm/root.h>
 #include <linux/compiler.h>
 #include <linux/err.h>
 #include <efi_loader.h>
 #include <sysmem.h>
 #include <bidram.h>
+#include <boot_rkimg.h>
+#include <mtd_blk.h>
+#if defined(CONFIG_GPIO_HOG)
+#include <asm/gpio.h>
+#endif
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -112,10 +118,32 @@ static int initr_reloc(void)
  * Some of these functions are needed purely because the functions they
  * call return void. If we change them to return 0, these stubs can go away.
  */
+
+static void print_cr(void)
+{
+	u32 reg;
+
+#ifdef CONFIG_ARM64
+	reg = get_sctlr();	/* get control reg. */
+#else
+	reg = get_cr();
+#endif
+	puts("CR: ");
+	if (reg & CR_M)
+		puts("M/");
+	if (reg & CR_C)
+		puts("C/");
+	if (reg & CR_I)
+		puts("I");
+	putc('\n');
+}
+
 static int initr_caches(void)
 {
 	/* Enable caches */
 	enable_caches();
+	print_cr();
+
 	return 0;
 }
 #endif
@@ -453,21 +481,6 @@ static int initr_mmc(void)
 }
 #endif
 
-#ifdef CONFIG_MTD_BLK
-static int initr_mtd_blk(void)
-{
-#ifndef CONFIG_USING_KERNEL_DTB
-	struct blk_desc *dev_desc;
-
-	puts("mtd_blk:   ");
-	dev_desc = rockchip_get_bootdev();
-	if (dev_desc)
-		mtd_blk_map_partitions(dev_desc);
-#endif
-	return 0;
-}
-#endif
-
 #if !defined(CONFIG_USING_KERNEL_DTB) || !defined(CONFIG_ENV_IS_NOWHERE)
 /*
  * Tell if it's OK to load the environment early in boot.
@@ -525,6 +538,10 @@ static int initr_env_nowhere(void)
 {
 #ifdef CONFIG_ENV_IS_NOWHERE
 	set_default_env(NULL);
+#if defined(CONFIG_ENVF)
+	/* init envf and partitiont from envf before any partition query action */
+	env_load();
+#endif
 	return 0;
 #else
 	const char env_minimum[] = {
@@ -869,11 +886,9 @@ static init_fnc_t init_sequence_r[] = {
 #if defined(CONFIG_ARM) || defined(CONFIG_NDS32) || defined(CONFIG_RISCV)
 	board_init,	/* Setup chipselects */
 #endif
-
 #if defined(CONFIG_USING_KERNEL_DTB) && !defined(CONFIG_ENV_IS_NOWHERE)
 	initr_env_switch,
 #endif
-
 	/*
 	 * TODO: printing of the clock inforamtion of the board is now
 	 * implemented as part of bdinfo command. Currently only support for
@@ -904,6 +919,11 @@ static init_fnc_t init_sequence_r[] = {
 	initr_post_backlog,
 #endif
 	INIT_FUNC_WATCHDOG_RESET
+
+#ifndef CONFIG_USING_KERNEL_DTB
+	/* init before storage(for: devtype, devnum, ...) */
+	initr_env,
+#endif
 #if defined(CONFIG_PCI) && defined(CONFIG_SYS_EARLY_PCI_INIT)
 	/*
 	 * Do early PCI configuration _before_ the flash gets initialised,
@@ -932,15 +952,10 @@ static init_fnc_t init_sequence_r[] = {
 #ifdef CONFIG_CMD_ONENAND
 	initr_onenand,
 #endif
-#ifdef CONFIG_MTD_BLK
-	initr_mtd_blk,
-#endif
 #ifdef CONFIG_MMC
 	initr_mmc,
 #endif
-#ifndef CONFIG_USING_KERNEL_DTB
-	initr_env,
-#endif
+
 #ifdef CONFIG_SYS_BOOTPARAMS_LEN
 	initr_malloc_bootparams,
 #endif
@@ -986,6 +1001,9 @@ static init_fnc_t init_sequence_r[] = {
 	/* PPC has a udelay(20) here dating from 2002. Why? */
 #ifdef CONFIG_CMD_NET
 	initr_ethaddr,
+#endif
+#if defined(CONFIG_GPIO_HOG)
+	gpio_hog_probe_all,
 #endif
 #ifdef CONFIG_BOARD_LATE_INIT
 	board_late_init,

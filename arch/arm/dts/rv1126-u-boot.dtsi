@@ -15,10 +15,12 @@
 		u-boot,spl-boot-order = &sdmmc, &spi_nand, &spi_nor, &nandc, &emmc;
 	};
 
-	secure_otp: secure_otp@0xff5d0000 {
+	secure-otp@ff5d0000 {
 		compatible = "rockchip,rv1126-secure-otp";
 		reg = <0xff5d0000 0x4000>;
 		secure_conf = <0xfe0a0008>;
+		u-boot,dm-spl;
+		status = "okay";
 	};
 };
 
@@ -36,6 +38,7 @@
 
 &sdmmc {
 	u-boot,dm-spl;
+	pwr-en-gpios = <&gpio0 RK_PC0 GPIO_ACTIVE_LOW>;
 	status = "okay";
 };
 
@@ -56,6 +59,14 @@
 };
 
 &sdmmc0_det {
+	u-boot,dm-spl;
+};
+
+&sdmmc0_idle_pins {
+	u-boot,dm-spl;
+};
+
+&sdmmc1_idle_pins {
 	u-boot,dm-spl;
 };
 
@@ -140,18 +151,13 @@
 	nand@0 {
 		u-boot,dm-spl;
 		reg = <0>;
-		nand-ecc-mode = "hw_syndrome";
+		nand-ecc-mode = "hw";
 		nand-ecc-strength = <16>;
 		nand-ecc-step-size = <1024>;
 	};
 };
 
 &hw_decompress {
-	u-boot,dm-spl;
-	status = "okay";
-};
-
-&secure_otp {
 	u-boot,dm-spl;
 	status = "okay";
 };
@@ -193,6 +199,11 @@
 	status = "okay";
 };
 
+&gpio0 {
+	u-boot,dm-spl;
+	status = "okay";
+};
+
 &gpio1 {
 	u-boot,dm-spl;
 	status = "okay";
@@ -203,6 +214,14 @@
 };
 
 &pcfg_pull_none {
+	u-boot,dm-spl;
+};
+
+&pcfg_pull_down{
+	u-boot,dm-spl;
+};
+
+&pcfg_pull_up{
 	u-boot,dm-spl;
 };
 

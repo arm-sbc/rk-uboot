@@ -10,6 +10,7 @@
 #include <dm.h>
 #include <errno.h>
 #include <image.h>
+#include <linux/log2.h>
 #include <malloc.h>
 #include <nand.h>
 #include <part.h>
@@ -20,10 +21,9 @@
 #include <linux/mtd/nand.h>
 #endif
 
+// #define MTD_BLK_VERBOSE
+
 #define MTD_PART_NAND_HEAD		"mtdparts="
-#define MTD_ROOT_PART_NUM		"ubi.mtd="
-#define MTD_ROOT_PART_NAME_UBIFS	"root=ubi0:rootfs"
-#define MTD_ROOT_PART_NAME_SQUASHFS	"root=/dev/ubiblock0_0"
 #define MTD_PART_INFO_MAX_SIZE		512
 #define MTD_SINGLE_PART_INFO_MAX_SIZE	40
 
@@ -132,7 +132,7 @@ void mtd_blk_map_partitions(struct blk_desc *desc)
 	for (i = 1; i < MAX_SEARCH_PARTITIONS; i++) {
 		ret = part_get_info(desc, i, &info);
 		if (ret != 0)
-			continue;
+			break;
 
 		if (mtd_blk_map_table_init(desc,
 					   info.start << 9,
@@ -205,8 +205,8 @@ static __maybe_unused int mtd_map_read(struct mtd_info *mtd, loff_t offset,
 		rval = mtd_read(mtd, mapped_offset, read_length, &read_length,
 				p_buffer);
 		if (rval && rval != -EUCLEAN) {
-			printf("NAND read from offset %llx failed %d\n",
-			       offset, rval);
+			printf("NAND read from offset %x failed %d\n",
+			       (u32)offset, rval);
 			*length -= left_to_read;
 			return rval;
 		}
@@ -350,12 +350,10 @@ static __maybe_unused int mtd_map_erase(struct mtd_info *mtd, loff_t offset,
 	return 0;
 }
 
-char *mtd_part_parse(void)
+char *mtd_part_parse(struct blk_desc *dev_desc)
 {
 	char mtd_part_info_temp[MTD_SINGLE_PART_INFO_MAX_SIZE] = {0};
 	u32 length, data_len = MTD_PART_INFO_MAX_SIZE;
-	char mtd_root_part_info[40] = {0};
-	struct blk_desc *dev_desc;
 	disk_partition_t info;
 	char *mtd_part_info_p;
 	struct mtd_info *mtd;
@@ -363,24 +361,15 @@ char *mtd_part_parse(void)
 	int ret;
 	int p;
 
+#ifndef CONFIG_SPL_BUILD
 	dev_desc = rockchip_get_bootdev();
+#endif
 	if (!dev_desc)
 		return NULL;
 
 	mtd = (struct mtd_info *)dev_desc->bdev->priv;
 	if (!mtd)
 		return NULL;
-
-	p = part_get_info_by_name(dev_desc, PART_SYSTEM, &info);
-	if (p > 0) {
-		if (strstr(env_get("bootargs"), "rootfstype=squashfs"))
-			snprintf(mtd_root_part_info, ARRAY_SIZE(mtd_root_part_info), "%s%d %s",
-				 MTD_ROOT_PART_NUM, p - 1, MTD_ROOT_PART_NAME_SQUASHFS);
-		else
-			snprintf(mtd_root_part_info, ARRAY_SIZE(mtd_root_part_info), "%s%d %s",
-				 MTD_ROOT_PART_NUM, p - 1, MTD_ROOT_PART_NAME_UBIFS);
-		env_update("bootargs", mtd_root_part_info);
-	}
 
 	mtd_part_info = (char *)calloc(MTD_PART_INFO_MAX_SIZE, sizeof(char));
 	if (!mtd_part_info) {
@@ -471,6 +460,9 @@ ulong mtd_dread(struct udevice *udev, lbaint_t start,
 #endif
 	struct mtd_info *mtd;
 	int ret = 0;
+#ifdef MTD_BLK_VERBOSE
+	ulong us = 1;
+#endif
 
 	if (!desc)
 		return ret;
@@ -482,24 +474,21 @@ ulong mtd_dread(struct udevice *udev, lbaint_t start,
 	if (blkcnt == 0)
 		return 0;
 
-	pr_debug("mtd dread %s %lx %lx\n", mtd->name, start, blkcnt);
-
+#ifdef MTD_BLK_VERBOSE
+	us = get_ticks();
+#endif
 	if (desc->devnum == BLK_MTD_NAND) {
 		ret = mtd_map_read(mtd, off, &rwsize,
 				   NULL, mtd->size,
 				   (u_char *)(dst));
 		if (!ret)
-			return blkcnt;
-		else
-			return 0;
+			ret = blkcnt;
 	} else if (desc->devnum == BLK_MTD_SPI_NAND) {
 		ret = mtd_map_read(mtd, off, &rwsize,
 				   NULL, mtd->size,
 				   (u_char *)(dst));
 		if (!ret)
-			return blkcnt;
-		else
-			return 0;
+			ret = blkcnt;
 	} else if (desc->devnum == BLK_MTD_SPI_NOR) {
 #if defined(CONFIG_SPI_FLASH_MTD) || defined(CONFIG_SPL_BUILD)
 		struct spi_nor *nor = (struct spi_nor *)mtd->priv;
@@ -508,18 +497,22 @@ ulong mtd_dread(struct udevice *udev, lbaint_t start,
 
 		if (desc->op_flag == BLK_PRE_RW)
 			spi->mode |= SPI_DMA_PREPARE;
-		mtd_read(mtd, off, rwsize, &retlen_nor, dst);
+		ret = mtd_read(mtd, off, rwsize, &retlen_nor, dst);
 		if (desc->op_flag == BLK_PRE_RW)
-			spi->mode |= SPI_DMA_PREPARE;
+			spi->mode &= ~SPI_DMA_PREPARE;
 
 		if (retlen_nor == rwsize)
-			return blkcnt;
-		else
+			ret = blkcnt;
 #endif
-			return 0;
-	} else {
-		return 0;
 	}
+#ifdef MTD_BLK_VERBOSE
+	us = (get_ticks() - us) / 24UL;
+	pr_err("mtd dread %s %lx %lx cost %ldus: %ldMB/s\n\n", mtd->name, start, blkcnt, us, (blkcnt / 2) / ((us + 999) / 1000));
+#else
+	pr_debug("mtd dread %s %lx %lx\n\n", mtd->name, start, blkcnt);
+#endif
+
+	return ret;
 }
 
 #if CONFIG_IS_ENABLED(MTD_WRITE)
@@ -633,7 +626,7 @@ ulong mtd_derase(struct udevice *udev, lbaint_t start,
 		return 0;
 	}
 
-	return 0;
+	return blkcnt;
 }
 #endif
 
@@ -649,6 +642,20 @@ static int mtd_blk_probe(struct udevice *udev)
 		mtd = dev_get_priv(udev->parent);
 #endif
 	}
+
+	/* Fill mtd devices information */
+	if (is_power_of_2(mtd->erasesize))
+		mtd->erasesize_shift = ffs(mtd->erasesize) - 1;
+	else
+		mtd->erasesize_shift = 0;
+
+	if (is_power_of_2(mtd->writesize))
+		mtd->writesize_shift = ffs(mtd->writesize) - 1;
+	else
+		mtd->writesize_shift = 0;
+
+	mtd->erasesize_mask = (1 << mtd->erasesize_shift) - 1;
+	mtd->writesize_mask = (1 << mtd->writesize_shift) - 1;
 
 	desc->bdev->priv = mtd;
 	sprintf(desc->vendor, "0x%.4x", 0x2207);

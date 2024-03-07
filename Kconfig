@@ -69,12 +69,12 @@ config DISTRO_DEFAULTS
 	select CMD_BOOTZ if ARM && !ARM64
 	select CMD_BOOTI if ARM64
 	select CMD_DHCP
-	select CMD_PXE
+	imply CMD_PXE
 	select CMD_EXT2
 	select CMD_EXT4
 	select CMD_FAT
 	select CMD_FS_GENERIC
-	select CMD_MII
+	imply CMD_MII
 	select CMD_PING
 	select CMD_PART
 	select HUSH_PARSER
@@ -168,6 +168,12 @@ endmenu		# General setup
 
 menu "Boot images"
 
+config IMAGE_GZIP
+	bool "U-Boot Image with gzip compression"
+	default n
+	help
+	  This enables gzip compression on U-Boot Image.
+
 config ANDROID_BOOT_IMAGE
 	bool "Enable support for Android Boot Images"
 	default y if FASTBOOT
@@ -177,8 +183,6 @@ config ANDROID_BOOT_IMAGE
 
 config FIT
 	bool "Support Flattened Image Tree"
-	select MD5
-	select SHA1
 	help
 	  This option allows you to boot the new uImage structure,
 	  Flattened Image Tree.  FIT is formally a FDT, which can include
@@ -193,7 +197,7 @@ if FIT
 
 config FIT_ENABLE_SHA256_SUPPORT
 	bool "Support SHA256 checksum of FIT image contents"
-	select SHA256
+	select SHA256 if !DM_CRYPTO
 	default y
 	help
 	  Enable this to support SHA256 checksum of FIT image contents. A
@@ -204,6 +208,18 @@ config FIT_ENABLE_SHA256_SUPPORT
 	  input data. Use this for the highest security. Note that only the
 	  SHA256 variant is supported: SHA512 and others are not currently
 	  supported in U-Boot.
+
+config FIT_ENABLE_RSA4096_SUPPORT
+	bool "Support RSA4096 verification of FIT image contents"
+	select RSA_SOFTWARE_EXP if !DM_CRYPTO
+	default n
+	help
+	  Enable this to support RSA4096 checksum of FIT image contents. A
+	  RSA4096 is a 4096-bit (512-byte) key used to check that
+	  check if the content comes from an encryption party. RSA4096 is one
+	  of algorithms recommended for use in secure applications since (as at 2016)
+	  there is no known feasible attack that could produce a 'collision' with differing
+	  input data. Use this for the higher security than RSA2048 in default.
 
 config FIT_SIGNATURE
 	bool "Enable signature verification of FIT uImages"
@@ -273,6 +289,16 @@ config FIT_HW_CRYPTO
 	help
 	  Enable hardware crypto for FIT image checksum and rsa verify.
 
+config FIT_PRINT
+	bool "Enable fit image structure and data print"
+	default y
+	help
+	  Say y here if you want to enable fit image structure and data
+	  print.
+
+config FIT_OMIT_UBOOT
+	bool "Omit u-boot-nodtb.bin and u-boot.dtb when output uboot.itb"
+
 if SPL
 
 config SPL_FIT
@@ -329,6 +355,13 @@ config SPL_SYS_DCACHE_OFF
 	help
 	  Disable SPL dcache. Please make sure CONFIG_SPL_SYS_MALLOC_F_LEN
 	  is large enough to malloc TLB and bd_t buffer while enabling dcache.
+
+config SPL_FIT_PRINT
+	bool "Enable fit image structure and data print in SPL"
+	default n
+	help
+	  Say y here if you want to enable fit image structure and data
+	  print in SPL.
 
 endif # SPL
 

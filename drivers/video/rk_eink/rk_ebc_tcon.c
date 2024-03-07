@@ -27,6 +27,7 @@ struct ebc_tcon_priv {
 	u32 reg_len;
 	void *grf;
 	void *pmugrf;
+	struct clk dclk;
 };
 
 #define msleep(a)		udelay((a) * 1000)
@@ -252,12 +253,26 @@ static inline void tcon_cfg_done(struct ebc_tcon_priv *tcon)
 
 static int ebc_tcon_enable(struct udevice *dev, struct ebc_panel *panel)
 {
+	int ret;
 	struct ebc_tcon_priv *tcon = dev_get_priv(dev);
+	u32 width, height, vir_width, vir_height;
+
+	if (panel->rearrange) {
+		width = panel->width * 2;
+		height = panel->height / 2;
+		vir_width = panel->vir_width * 2;
+		vir_height = panel->vir_height / 2;
+	} else {
+		width = panel->width;
+		height = panel->height;
+		vir_width = panel->vir_width;
+		vir_height = panel->vir_height;
+	}
 
 	/* panel timing and win info config */
 	tcon_write(tcon, EBC_DSP_HTIMING0,
 		   DSP_HTOTAL(panel->lsl + panel->lbl + panel->ldl +
-			      panel->lel) | DSP_HS_END(panel->lsl + 2));
+			      panel->lel) | DSP_HS_END(panel->lsl));
 	tcon_write(tcon, EBC_DSP_HTIMING1,
 		   DSP_HACT_END(panel->lsl + panel->lbl + panel->ldl) |
 		   DSP_HACT_ST(panel->lsl + panel->lbl - 1));
@@ -268,17 +283,17 @@ static int ebc_tcon_enable(struct udevice *dev, struct ebc_panel *panel)
 		   DSP_VACT_END(panel->fsl + panel->fbl + panel->fdl) |
 		   DSP_VACT_ST(panel->fsl + panel->fbl));
 	tcon_write(tcon, EBC_DSP_ACT_INFO,
-		   DSP_HEIGHT(panel->height) |
-		   DSP_WIDTH(panel->width));
+		   DSP_HEIGHT(height) |
+		   DSP_WIDTH(width));
 	tcon_write(tcon, EBC_WIN_VIR,
-		   WIN_VIR_HEIGHT(panel->vir_height) |
-		   WIN_VIR_WIDTH(panel->vir_width));
+		   WIN_VIR_HEIGHT(vir_height) |
+		   WIN_VIR_WIDTH(vir_width));
 	tcon_write(tcon, EBC_WIN_ACT,
-		   WIN_ACT_HEIGHT(panel->height) |
-		   WIN_ACT_WIDTH(panel->width));
+		   WIN_ACT_HEIGHT(height) |
+		   WIN_ACT_WIDTH(width));
 	tcon_write(tcon, EBC_WIN_DSP,
-		   WIN_DSP_HEIGHT(panel->height) |
-		   WIN_DSP_WIDTH(panel->width));
+		   WIN_DSP_HEIGHT(height) |
+		   WIN_DSP_WIDTH(width));
 	tcon_write(tcon, EBC_WIN_DSP_ST,
 		   WIN_DSP_YST(panel->fsl + panel->fbl) |
 		   WIN_DSP_XST(panel->lsl + panel->lbl));
@@ -323,6 +338,12 @@ static int ebc_tcon_enable(struct udevice *dev, struct ebc_panel *panel)
 		   DSP_SDCLK_DIV(panel->panel_16bit ? 7 : 3));
 
 	tcon_cfg_done(tcon);
+
+	ret = clk_set_rate(&tcon->dclk, panel->sdck * ((panel->panel_16bit ? 7 : 3) + 1));
+	if (ret < 0) {
+		printf("%s: set clock rate failed, %d\n", __func__, ret);
+		return ret;
+	}
 
 	return 0;
 }
@@ -460,9 +481,11 @@ static int rk_ebc_tcon_probe(struct udevice *dev)
 	}
 
 	priv->dev = dev;
-	ret = clk_set_defaults(dev);
-	if (ret)
-		printf("%s clk_set_defaults failed %d\n", __func__, ret);
+	ret = clk_get_by_index(dev, 1, &priv->dclk);
+	if (ret < 0) {
+		printf("%s get clock fail! %d\n", __func__, ret);
+		return -EINVAL;
+	}
 
 #ifdef CONFIG_IRQ
 	irq_install_handler(IRQ_EBC, ebc_irq_handler, dev);

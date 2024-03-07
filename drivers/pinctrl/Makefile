@@ -22,3 +22,7 @@ obj-$(CONFIG_ARCH_MVEBU)	+= mvebu/
 obj-$(CONFIG_PINCTRL_SINGLE)	+= pinctrl-single.o
 obj-$(CONFIG_PINCTRL_STI)	+= pinctrl-sti.o
 obj-$(CONFIG_PINCTRL_STM32)	+= pinctrl_stm32.o
+ifndef CONFIG_SPL_BUILD
+obj-$(CONFIG_PINCTRL_MAX96745)  += pinctrl-max96745.o
+obj-$(CONFIG_PINCTRL_MAX96755F) += pinctrl-max96755f.o
+endif

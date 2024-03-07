@@ -519,6 +519,7 @@ static int rockchip_nand_ecc_init(struct mtd_info *mtd,
 	int ret;
 
 	switch (ecc->mode) {
+	case NAND_ECC_HW:
 	case NAND_ECC_HW_SYNDROME:
 		ret = rockchip_nand_hw_ecc_ctrl_init(mtd, ecc);
 		if (ret)
@@ -561,8 +562,7 @@ static int rockchip_nand_block_bad(struct mtd_info *mtd, loff_t ofs)
 		if (bad != 0xFF)
 			res = 1;
 		/* last page of the block */
-		page += ((mtd->erasesize - mtd->writesize) >> chip->chip_shift);
-		page--;
+		page += ((mtd->erasesize - mtd->writesize) >> chip->page_shift);
 		chip->cmdfunc(mtd, NAND_CMD_READOOB, chip->badblockpos, page);
 		bad = chip->read_byte(mtd);
 		if (bad != 0xFF)

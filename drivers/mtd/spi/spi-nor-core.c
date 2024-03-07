@@ -181,7 +181,7 @@ static int read_fsr(struct spi_nor *nor)
  * location. Return the configuration register value.
  * Returns negative if error occurred.
  */
-#if defined(CONFIG_SPI_FLASH_SPANSION) || defined(CONFIG_SPI_FLASH_WINBOND)
+#if defined(CONFIG_SPI_FLASH_SPANSION) || defined(CONFIG_SPI_FLASH_WINBOND) || defined(CONFIG_SPI_FLASH_NORMEM)
 static int read_cr(struct spi_nor *nor)
 {
 	int ret;
@@ -206,6 +206,18 @@ static int write_sr(struct spi_nor *nor, u8 val)
 	nor->cmd_buf[0] = val;
 	return nor->write_reg(nor, SPINOR_OP_WRSR, nor->cmd_buf, 1);
 }
+
+#ifdef CONFIG_SPI_FLASH_NORMEM
+/*
+ * Write confiture register 1 byte
+ * Returns negative if error occurred.
+ */
+static int write_cr(struct spi_nor *nor, u8 val)
+{
+	nor->cmd_buf[0] = val;
+	return nor->write_reg(nor, SPINOR_OP_WRCR, nor->cmd_buf, 1);
+}
+#endif
 
 /*
  * Set write enable latch with Write Enable command.
@@ -251,6 +263,8 @@ static u8 spi_nor_convert_3to4_read(u8 opcode)
 		{ SPINOR_OP_READ_1_2_2,	SPINOR_OP_READ_1_2_2_4B },
 		{ SPINOR_OP_READ_1_1_4,	SPINOR_OP_READ_1_1_4_4B },
 		{ SPINOR_OP_READ_1_4_4,	SPINOR_OP_READ_1_4_4_4B },
+		{ SPINOR_OP_READ_1_1_8,	SPINOR_OP_READ_1_1_8_4B },
+		{ SPINOR_OP_READ_1_8_8,	SPINOR_OP_READ_1_8_8_4B },
 
 		{ SPINOR_OP_READ_1_1_1_DTR,	SPINOR_OP_READ_1_1_1_DTR_4B },
 		{ SPINOR_OP_READ_1_2_2_DTR,	SPINOR_OP_READ_1_2_2_DTR_4B },
@@ -267,6 +281,8 @@ static u8 spi_nor_convert_3to4_program(u8 opcode)
 		{ SPINOR_OP_PP,		SPINOR_OP_PP_4B },
 		{ SPINOR_OP_PP_1_1_4,	SPINOR_OP_PP_1_1_4_4B },
 		{ SPINOR_OP_PP_1_4_4,	SPINOR_OP_PP_1_4_4_4B },
+		{ SPINOR_OP_PP_1_1_8,	SPINOR_OP_PP_1_1_8_4B },
+		{ SPINOR_OP_PP_1_8_8,	SPINOR_OP_PP_1_8_8_4B },
 	};
 
 	return spi_nor_convert_opcode(opcode, spi_nor_3to4_program,
@@ -380,12 +396,12 @@ static int spi_nor_fsr_ready(struct spi_nor *nor)
 
 	if (fsr & (FSR_E_ERR | FSR_P_ERR)) {
 		if (fsr & FSR_E_ERR)
-			dev_dbg(nor->dev, "Erase operation failed.\n");
+			dev_err(nor->dev, "Erase operation failed.\n");
 		else
-			dev_dbg(nor->dev, "Program operation failed.\n");
+			dev_err(nor->dev, "Program operation failed.\n");
 
 		if (fsr & FSR_PT_ERR)
-			dev_dbg(nor->dev,
+			dev_err(nor->dev,
 				"Attempted to modify a protected sector.\n");
 
 		nor->write_reg(nor, SPINOR_OP_CLFSR, NULL, 0);
@@ -945,6 +961,177 @@ read_err:
 }
 
 #ifdef CONFIG_SPI_FLASH_SST
+/*
+ * sst26 flash series has its own block protection implementation:
+ * 4x   - 8  KByte blocks - read & write protection bits - upper addresses
+ * 1x   - 32 KByte blocks - write protection bits
+ * rest - 64 KByte blocks - write protection bits
+ * 1x   - 32 KByte blocks - write protection bits
+ * 4x   - 8  KByte blocks - read & write protection bits - lower addresses
+ *
+ * We'll support only per 64k lock/unlock so lower and upper 64 KByte region
+ * will be treated as single block.
+ */
+#define SST26_BPR_8K_NUM		4
+#define SST26_MAX_BPR_REG_LEN		(18 + 1)
+#define SST26_BOUND_REG_SIZE		((32 + SST26_BPR_8K_NUM * 8) * SZ_1K)
+
+enum lock_ctl {
+	SST26_CTL_LOCK,
+	SST26_CTL_UNLOCK,
+	SST26_CTL_CHECK
+};
+
+static bool sst26_process_bpr(u32 bpr_size, u8 *cmd, u32 bit, enum lock_ctl ctl)
+{
+	switch (ctl) {
+	case SST26_CTL_LOCK:
+		cmd[bpr_size - (bit / 8) - 1] |= BIT(bit % 8);
+		break;
+	case SST26_CTL_UNLOCK:
+		cmd[bpr_size - (bit / 8) - 1] &= ~BIT(bit % 8);
+		break;
+	case SST26_CTL_CHECK:
+		return !!(cmd[bpr_size - (bit / 8) - 1] & BIT(bit % 8));
+	}
+
+	return false;
+}
+
+/*
+ * Lock, unlock or check lock status of the flash region of the flash (depending
+ * on the lock_ctl value)
+ */
+static int sst26_lock_ctl(struct spi_nor *nor, loff_t ofs, uint64_t len, enum lock_ctl ctl)
+{
+	struct mtd_info *mtd = &nor->mtd;
+	u32 i, bpr_ptr, rptr_64k, lptr_64k, bpr_size;
+	bool lower_64k = false, upper_64k = false;
+	u8 bpr_buff[SST26_MAX_BPR_REG_LEN] = {};
+	int ret;
+
+	/* Check length and offset for 64k alignment */
+	if ((ofs & (SZ_64K - 1)) || (len & (SZ_64K - 1))) {
+		dev_err(nor->dev, "length or offset is not 64KiB allighned\n");
+		return -EINVAL;
+	}
+
+	if (ofs + len > mtd->size) {
+		dev_err(nor->dev, "range is more than device size: %#llx + %#llx > %#llx\n",
+			ofs, len, mtd->size);
+		return -EINVAL;
+	}
+
+	/* SST26 family has only 16 Mbit, 32 Mbit and 64 Mbit IC */
+	if (mtd->size != SZ_2M &&
+	    mtd->size != SZ_4M &&
+	    mtd->size != SZ_8M)
+		return -EINVAL;
+
+	bpr_size = 2 + (mtd->size / SZ_64K / 8);
+
+	ret = nor->read_reg(nor, SPINOR_OP_READ_BPR, bpr_buff, bpr_size);
+	if (ret < 0) {
+		dev_err(nor->dev, "fail to read block-protection register\n");
+		return ret;
+	}
+
+	rptr_64k = min_t(u32, ofs + len, mtd->size - SST26_BOUND_REG_SIZE);
+	lptr_64k = max_t(u32, ofs, SST26_BOUND_REG_SIZE);
+
+	upper_64k = ((ofs + len) > (mtd->size - SST26_BOUND_REG_SIZE));
+	lower_64k = (ofs < SST26_BOUND_REG_SIZE);
+
+	/* Lower bits in block-protection register are about 64k region */
+	bpr_ptr = lptr_64k / SZ_64K - 1;
+
+	/* Process 64K blocks region */
+	while (lptr_64k < rptr_64k) {
+		if (sst26_process_bpr(bpr_size, bpr_buff, bpr_ptr, ctl))
+			return EACCES;
+
+		bpr_ptr++;
+		lptr_64k += SZ_64K;
+	}
+
+	/* 32K and 8K region bits in BPR are after 64k region bits */
+	bpr_ptr = (mtd->size - 2 * SST26_BOUND_REG_SIZE) / SZ_64K;
+
+	/* Process lower 32K block region */
+	if (lower_64k)
+		if (sst26_process_bpr(bpr_size, bpr_buff, bpr_ptr, ctl))
+			return EACCES;
+
+	bpr_ptr++;
+
+	/* Process upper 32K block region */
+	if (upper_64k)
+		if (sst26_process_bpr(bpr_size, bpr_buff, bpr_ptr, ctl))
+			return EACCES;
+
+	bpr_ptr++;
+
+	/* Process lower 8K block regions */
+	for (i = 0; i < SST26_BPR_8K_NUM; i++) {
+		if (lower_64k)
+			if (sst26_process_bpr(bpr_size, bpr_buff, bpr_ptr, ctl))
+				return EACCES;
+
+		/* In 8K area BPR has both read and write protection bits */
+		bpr_ptr += 2;
+	}
+
+	/* Process upper 8K block regions */
+	for (i = 0; i < SST26_BPR_8K_NUM; i++) {
+		if (upper_64k)
+			if (sst26_process_bpr(bpr_size, bpr_buff, bpr_ptr, ctl))
+				return EACCES;
+
+		/* In 8K area BPR has both read and write protection bits */
+		bpr_ptr += 2;
+	}
+
+	/* If we check region status we don't need to write BPR back */
+	if (ctl == SST26_CTL_CHECK)
+		return 0;
+
+	ret = nor->write_reg(nor, SPINOR_OP_WRITE_BPR, bpr_buff, bpr_size);
+	if (ret < 0) {
+		dev_err(nor->dev, "fail to write block-protection register\n");
+		return ret;
+	}
+
+	return 0;
+}
+
+static int sst26_unlock(struct spi_nor *nor, loff_t ofs, uint64_t len)
+{
+	return sst26_lock_ctl(nor, ofs, len, SST26_CTL_UNLOCK);
+}
+
+static int sst26_lock(struct spi_nor *nor, loff_t ofs, uint64_t len)
+{
+	return sst26_lock_ctl(nor, ofs, len, SST26_CTL_LOCK);
+}
+
+/*
+ * Returns EACCES (positive value) if region is locked, 0 if region is unlocked,
+ * and negative on errors.
+ */
+static int sst26_is_locked(struct spi_nor *nor, loff_t ofs, uint64_t len)
+{
+	/*
+	 * is_locked function is used for check before reading or erasing flash
+	 * region, so offset and length might be not 64k allighned, so adjust
+	 * them to be 64k allighned as sst26_lock_ctl works only with 64k
+	 * allighned regions.
+	 */
+	ofs -= ofs & (SZ_64K - 1);
+	len = len & (SZ_64K - 1) ? (len & ~(SZ_64K - 1)) + SZ_64K : len;
+
+	return sst26_lock_ctl(nor, ofs, len, SST26_CTL_CHECK);
+}
+
 static int sst_write_byteprogram(struct spi_nor *nor, loff_t to, size_t len,
 				 size_t *retlen, const u_char *buf)
 {
@@ -1257,6 +1444,45 @@ static int spansion_no_read_cr_quad_enable(struct spi_nor *nor)
 
 #endif /* CONFIG_SPI_FLASH_SFDP_SUPPORT */
 #endif /* CONFIG_SPI_FLASH_SPANSION */
+
+#ifdef CONFIG_SPI_FLASH_NORMEM
+/**
+ * normem_quad_enable() - set QE bit in Status Register.
+ * @nor:	pointer to a 'struct spi_nor'
+ *
+ * Set the Quad Enable (QE) bit in the Status Register.
+ *
+ * bit 6 of the Status Register is the QE bit for Macronix like QSPI memories.
+ *
+ * Return: 0 on success, -errno otherwise.
+ */
+static int normem_quad_enable(struct spi_nor *nor)
+{
+	int ret, val;
+
+	val = read_cr(nor);
+	if (val < 0)
+		return val;
+	if (val & SR_QUAD_EN_NORMEM)
+		return 0;
+
+	write_enable(nor);
+
+	write_cr(nor, val | SR_QUAD_EN_NORMEM);
+
+	ret = spi_nor_wait_till_ready(nor);
+	if (ret)
+		return ret;
+
+	ret = read_cr(nor);
+	if (!(ret > 0 && (ret & SR_QUAD_EN_NORMEM))) {
+		dev_err(nor->dev, "NORMEM Quad bit not set\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+#endif
 
 struct spi_nor_read_command {
 	u8			num_mode_clocks;
@@ -1745,7 +1971,7 @@ static int spi_nor_parse_bfpt(struct spi_nor *nor,
 
 		erasesize = 1U << erasesize;
 		opcode = (half >> 8) & 0xff;
-#ifdef CONFIG_MTD_SPI_NOR_USE_4K_SECTORS
+#ifdef CONFIG_SPI_FLASH_USE_4K_SECTORS
 		if (erasesize == SZ_4K) {
 			nor->erase_opcode = opcode;
 			mtd->erasesize = erasesize;
@@ -1950,6 +2176,13 @@ static int spi_nor_init_params(struct spi_nor *nor,
 					  SNOR_PROTO_1_1_4);
 	}
 
+	if (info->flags & SPI_NOR_OCTAL_READ) {
+		params->hwcaps.mask |= SNOR_HWCAPS_READ_1_1_8;
+		spi_nor_set_read_settings(&params->reads[SNOR_CMD_READ_1_1_8],
+					  0, 8, SPINOR_OP_READ_1_1_8,
+					  SNOR_PROTO_1_1_8);
+	}
+
 	/* Page Program settings. */
 	params->hwcaps.mask |= SNOR_HWCAPS_PP;
 	spi_nor_set_pp_settings(&params->page_programs[SNOR_CMD_PP],
@@ -1973,7 +2206,11 @@ static int spi_nor_init_params(struct spi_nor *nor,
 		case SNOR_MFR_ST:
 		case SNOR_MFR_MICRON:
 			break;
-
+#ifdef CONFIG_SPI_FLASH_NORMEM
+		case SNOR_MFR_NORMEM:
+			params->quad_enable = normem_quad_enable;
+			break;
+#endif
 		default:
 #if defined(CONFIG_SPI_FLASH_SPANSION) || defined(CONFIG_SPI_FLASH_WINBOND)
 			/* Kept only for backward compatibility purpose. */
@@ -2257,7 +2494,14 @@ int spi_nor_scan(struct spi_nor *nor)
 	nor->read_reg = spi_nor_read_reg;
 	nor->write_reg = spi_nor_write_reg;
 
-	if (spi->mode & SPI_RX_QUAD) {
+	if (spi->mode & SPI_RX_OCTAL) {
+		hwcaps.mask |= SNOR_HWCAPS_READ_1_1_8;
+
+		if (spi->mode & SPI_TX_OCTAL)
+			hwcaps.mask |= (SNOR_HWCAPS_READ_1_8_8 |
+					SNOR_HWCAPS_PP_1_1_8 |
+					SNOR_HWCAPS_PP_1_8_8);
+	} else if (spi->mode & SPI_RX_QUAD) {
 		hwcaps.mask |= SNOR_HWCAPS_READ_1_1_4;
 
 		if (spi->mode & SPI_TX_QUAD)
@@ -2288,11 +2532,6 @@ int spi_nor_scan(struct spi_nor *nor)
 	mtd->size = params.size;
 	mtd->_erase = spi_nor_erase;
 	mtd->_read = spi_nor_read;
-	if (is_power_of_2(mtd->erasesize))
-		mtd->erasesize_shift = ffs(mtd->erasesize) - 1;
-	else
-		mtd->erasesize_shift = 0;
-	mtd->erasesize_mask = (1 << mtd->erasesize_shift) - 1;
 
 #if defined(CONFIG_SPI_FLASH_STMICRO) || defined(CONFIG_SPI_FLASH_SST)
 	/* NOR protection support for STmicro/Micron chips and similar */
@@ -2307,6 +2546,16 @@ int spi_nor_scan(struct spi_nor *nor)
 #endif
 
 #ifdef CONFIG_SPI_FLASH_SST
+	/*
+	 * sst26 series block protection implementation differs from other
+	 * series.
+	 */
+	if (info->flags & SPI_NOR_HAS_SST26LOCK) {
+		nor->flash_lock = sst26_lock;
+		nor->flash_unlock = sst26_unlock;
+		nor->flash_is_locked = sst26_is_locked;
+	}
+
 	/* sst nor chips use AAI word program */
 	if (info->flags & SST_WRITE)
 		mtd->_write = sst_write;
@@ -2384,6 +2633,7 @@ int spi_nor_scan(struct spi_nor *nor)
 	nor->sector_size = mtd->erasesize;
 
 #ifndef CONFIG_SPL_BUILD
+	printf("JEDEC id bytes: %02x, %02x, %02x\n", info->id[0], info->id[1], info->id[2]);
 	printf("SF: Detected %s with page size ", nor->name);
 	print_size(nor->page_size, ", erase size ");
 	print_size(nor->erase_size, ", total ");

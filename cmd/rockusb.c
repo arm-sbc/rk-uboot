@@ -23,12 +23,16 @@ static int rkusb_read_sector(struct ums *ums_dev,
 {
 	struct blk_desc *block_dev = &ums_dev->block_dev;
 	lbaint_t blkstart = start + ums_dev->start_sector;
+	int ret;
 
 	if ((blkstart + blkcnt) > RKUSB_READ_LIMIT_ADDR) {
 		memset(buf, 0xcc, blkcnt * SECTOR_SIZE);
 		return blkcnt;
 	} else {
-		return blk_dread(block_dev, blkstart, blkcnt, buf);
+		ret = blk_dread(block_dev, blkstart, blkcnt, buf);
+		if (!ret)
+			ret = -EIO;
+		return ret;
 	}
 }
 
@@ -41,7 +45,11 @@ static int rkusb_write_sector(struct ums *ums_dev,
 
 	if (block_dev->if_type == IF_TYPE_MTD)
 		block_dev->op_flag |= BLK_MTD_CONT_WRITE;
+
 	ret = blk_dwrite(block_dev, blkstart, blkcnt, buf);
+	if (!ret)
+		ret = -EIO;
+
 	if (block_dev->if_type == IF_TYPE_MTD)
 		block_dev->op_flag &= ~(BLK_MTD_CONT_WRITE);
 	return ret;
@@ -64,8 +72,8 @@ static void rkusb_fini(void)
 		free((void *)g_rkusb->ums[i].name);
 	free(g_rkusb->ums);
 	g_rkusb->ums = NULL;
-	g_rkusb = NULL;
 	g_rkusb->ums_cnt = 0;
+	g_rkusb = NULL;
 }
 
 #define RKUSB_NAME_LEN 16
@@ -143,6 +151,34 @@ cleanup:
 	return ret;
 }
 
+void rkusb_force_to_usb2(bool enable)
+{
+	if (g_rkusb)
+		g_rkusb->force_usb2 = enable;
+}
+
+bool rkusb_force_usb2_enabled(void)
+{
+	if (!g_rkusb)
+		return true;
+
+	return g_rkusb->force_usb2;
+}
+
+void rkusb_switch_to_usb3_enable(bool enable)
+{
+	if (g_rkusb)
+		g_rkusb->switch_usb3 = enable;
+}
+
+bool rkusb_switch_usb3_enabled(void)
+{
+	if (!g_rkusb)
+		return false;
+
+	return g_rkusb->switch_usb3;
+}
+
 static int do_rkusb(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
 {
 	const char *usb_controller;
@@ -156,6 +192,7 @@ static int do_rkusb(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
 	if (argc != 4)
 		return CMD_RET_USAGE;
 
+re_enumerate:
 	usb_controller = argv[1];
 	devtype = argv[2];
 	devnum	= argv[3];
@@ -163,6 +200,13 @@ static int do_rkusb(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
 	if (!strcmp(devtype, "mmc") && !strcmp(devnum, "1")) {
 		pr_err("Forbid to flash mmc 1(sdcard)\n");
 		return CMD_RET_FAILURE;
+	} else if ((!strcmp(devtype, "nvme") || !strcmp(devtype, "scsi")) && !strcmp(devnum, "0")) {
+		/*
+		 * Add partnum ":0" to active 'allow_whole_dev' partition
+		 * search mechanism on multi storage, where there maybe not
+		 * valid partition table.
+		 */
+		devnum = "0:0";
 	}
 
 	g_rkusb = &rkusb;
@@ -197,23 +241,34 @@ static int do_rkusb(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
 		goto cleanup_board;
 	}
 
-	s = env_get("serial#");
-	if (s) {
-		char *sn = (char *)calloc(strlen(s) + 1, sizeof(char));
-		char *sn_p = sn;
+	if (rkusb_switch_usb3_enabled()) {
+		/* Maskrom usb3 serialnumber get from upgrade tool */
+		rkusb_switch_to_usb3_enable(false);
+	} else {
+		s = env_get("serial#");
+		if (s) {
+			char *sn = (char *)calloc(strlen(s) + 1, sizeof(char));
+			char *sn_p = sn;
 
-		if (!sn)
-			goto cleanup_board;
+			if (!sn)
+				goto cleanup_board;
 
-		memcpy(sn, s, strlen(s));
-		while (*sn_p) {
-			if (*sn_p == '\\' || *sn_p == '/')
-				*sn_p = '_';
-			sn_p++;
+			memcpy(sn, s, strlen(s));
+			while (*sn_p) {
+				if (*sn_p == '\\' || *sn_p == '/')
+					*sn_p = '_';
+				sn_p++;
+			}
+
+			g_dnl_set_serialnumber(sn);
+			free(sn);
+#if defined(CONFIG_SUPPORT_USBPLUG)
+		} else {
+			char sn[9] = "Rockchip";
+
+			g_dnl_set_serialnumber(sn);
+#endif
 		}
-
-		g_dnl_set_serialnumber(sn);
-		free(sn);
 	}
 
 	rc = g_dnl_register("rkusb_ums_dnl");
@@ -253,6 +308,16 @@ static int do_rkusb(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
 
 		rc = fsg_main_thread(NULL);
 		if (rc) {
+			if (rc == -ENODEV && rkusb_usb3_capable() &&
+			    !rkusb_force_usb2_enabled()) {
+				printf("wait for usb3 connect timeout\n");
+				rkusb_force_to_usb2(true);
+				g_dnl_unregister();
+				usb_gadget_release(controller_index);
+				rkusb_fini();
+				goto re_enumerate;
+			}
+
 			/* Check I/O error */
 			if (rc == -EIO)
 				printf("\rCheck USB cable connection\n");
@@ -263,6 +328,14 @@ static int do_rkusb(cmd_tbl_t *cmdtp, int flag, int argc, char *const argv[])
 
 			rc = CMD_RET_SUCCESS;
 			goto cleanup_register;
+		}
+
+		if (rkusb_switch_usb3_enabled()) {
+			printf("rockusb switch to usb3\n");
+			g_dnl_unregister();
+			usb_gadget_release(controller_index);
+			rkusb_fini();
+			goto re_enumerate;
 		}
 	}
 

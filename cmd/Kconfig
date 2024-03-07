@@ -929,6 +929,15 @@ config CMD_PCMCIA
 	  about 1990. These devices are typically removable memory or network
 	  cards using a standard 68-pin connector.
 
+config CMD_PINMUX
+	bool "pinmux - show pins muxing"
+	depends on PINCTRL
+	default y if PINCTRL
+	help
+	  Parse all available pin-controllers and show pins muxing. This
+	  is useful for debug purpoer to check the pin muxing and to know if
+	  a pin is configured as a GPIO or as an alternate function.
+
 config CMD_READ
 	bool "read - Read binary data from a partition"
 	help
@@ -1020,6 +1029,13 @@ config CMD_TSI148
 	  This provides various sub-commands to initialise and configure the
 	  Turndra tsi148 device. See the command help for full details.
 
+config CMD_UFS
+	bool "Enable UFS - Universal Flash Subsystem commands"
+	depends on UFS
+	help
+	  "This provides commands to initialise and configure universal flash
+	   subsystem devices"
+
 config CMD_UNIVERSE
 	bool "universe - Command to set up the Turndra Universe controller"
 	help
@@ -1059,6 +1075,11 @@ config CMD_ITEST
 	default y
 	help
 	  Return true/false on integer compare.
+
+config CMD_SCRIPT_UPDATE
+	bool "sd_update/usb_update/tftp_update"
+	help
+	  Auto run sd_update/usb_update/tftp_update.txt from sd/udisk/tftp.
 
 config CMD_SOURCE
 	bool "source"
@@ -1102,6 +1123,12 @@ config CMD_TFTP_FLASH
 	bool "tftp download and flash"
 	help
 	  TFTP flash command, download and flash the Image to partition.
+
+config CMD_TFTP_UPDATE
+	bool "tftp update"
+	help
+	  Update a set of images organized with FIT via network using TFTP protocol
+
 
 config CMD_TFTPSRV
 	bool "tftpsrv"
@@ -1170,15 +1197,7 @@ config CMD_ETHSW
 
 endmenu
 
-config CMD_MEMTESTER
-	bool "Enable memtester for ddr"
-	help
-	  This enables memtester for ddr.
-
-config CMD_DDR_TEST_TOOL
-	bool "Enable ddr test tool"
-	help
-	  This enable ddr test tool code.
+source "cmd/ddr_tool/Kconfig"
 
 menu "Misc commands"
 
@@ -1528,6 +1547,11 @@ config CMD_EXT4_WRITE
 	help
 	  Enables EXT4 FS write command
 
+config CMD_EXT4_SPARSE_WRITE
+	depends on CMD_EXT4
+	bool "ext4 sparse write command support"
+	help
+
 config CMD_FAT
 	bool "FAT command support"
 	select FS_FAT
@@ -1636,6 +1660,12 @@ config CMD_ZFS
 endmenu
 
 menu "Debug commands"
+
+config CMD_ATAGS
+	bool "atags - Dump all rockchip atags"
+	default y
+	help
+	  This command dump all rockchip atags.
 
 config CMD_BEDBUG
 	bool "bedbug"

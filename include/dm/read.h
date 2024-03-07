@@ -271,6 +271,18 @@ int dev_count_phandle_with_args(struct udevice *dev, const char *list_name,
 int dev_read_addr_cells(struct udevice *dev);
 
 /**
+ * dev_remap_addr_index() - Get the indexed reg property of a device
+ *                               as a memory-mapped I/O pointer
+ *
+ * @dev: Device to read from
+ * @index: the 'reg' property can hold a list of <addr, size> pairs
+ *         and @index is used to select which one is required
+ *
+ * Return: pointer or NULL if not found
+ */
+void *dev_remap_addr_index(struct udevice *dev, int index);
+
+/**
  * dev_read_size_cells() - Get the number of size cells for a device's node
  *
  * This walks back up the tree to find the closest #size-cells property
@@ -318,6 +330,42 @@ int dev_read_phandle(struct udevice *dev);
  * @return pointer to property, or NULL if not found
  */
 const void *dev_read_prop(struct udevice *dev, const char *propname, int *lenp);
+
+/**
+ * dev_read_first_prop()- get the reference of the first property
+ *
+ * Get reference to the first property of the node, it is used to iterate
+ * and read all the property with dev_read_prop_by_prop().
+ *
+ * @dev: device to check
+ * @prop: place to put argument reference
+ * @return 0 if OK, -ve on error. -FDT_ERR_NOTFOUND if not found
+ */
+int dev_read_first_prop(struct udevice *dev, struct ofprop *prop);
+
+/**
+ * ofnode_get_next_property() - get the reference of the next property
+ *
+ * Get reference to the next property of the node, it is used to iterate
+ * and read all the property with dev_read_prop_by_prop().
+ *
+ * @prop: reference of current argument and place to put reference of next one
+ * @return 0 if OK, -ve on error. -FDT_ERR_NOTFOUND if not found
+ */
+int dev_read_next_prop(struct ofprop *prop);
+
+/**
+ * dev_read_prop_by_prop() - get a pointer to the value of a property
+ *
+ * Get value for the property identified by the provided reference.
+ *
+ * @prop: reference on property
+ * @propname: If non-NULL, place to property name on success,
+ * @lenp: If non-NULL, place to put length on success
+ * @return 0 if OK, -ve on error. -FDT_ERR_NOTFOUND if not found
+ */
+const void *dev_read_prop_by_prop(struct ofprop *prop,
+				  const char **propname, int *lenp);
 
 /**
  * dev_read_alias_seq() - Get the alias sequence number of a node
@@ -552,6 +600,11 @@ static inline int dev_read_addr_cells(struct udevice *dev)
 	return fdt_address_cells(gd->fdt_blob, dev_of_offset(dev));
 }
 
+static inline void *dev_remap_addr_index(struct udevice *dev, int index)
+{
+	return devfdt_remap_addr_index(dev, index);
+}
+
 static inline int dev_read_size_cells(struct udevice *dev)
 {
 	/* NOTE: this call should walk up the parent stack */
@@ -577,6 +630,23 @@ static inline const void *dev_read_prop(struct udevice *dev,
 					const char *propname, int *lenp)
 {
 	return ofnode_get_property(dev_ofnode(dev), propname, lenp);
+}
+
+static inline int dev_read_first_prop(struct udevice *dev, struct ofprop *prop)
+{
+	return ofnode_get_first_property(dev_ofnode(dev), prop);
+}
+
+static inline int dev_read_next_prop(struct ofprop *prop)
+{
+	return ofnode_get_next_property(prop);
+}
+
+static inline const void *dev_read_prop_by_prop(struct ofprop *prop,
+						const char **propname,
+						int *lenp)
+{
+	return ofnode_get_property_by_prop(prop, propname, lenp);
 }
 
 static inline int dev_read_alias_seq(struct udevice *dev, int *devnump)
@@ -647,5 +717,19 @@ static inline u64 dev_translate_address(struct udevice *dev, const fdt32_t *in_a
 	for (subnode = dev_read_first_subnode(dev); \
 	     ofnode_valid(subnode); \
 	     subnode = ofnode_next_subnode(subnode))
+
+/**
+ * dev_for_each_property() - Helper function to iterate through property
+ *
+ * This creates a for() loop which works through the property in a device's
+ * device-tree node.
+ *
+ * @prop: struct ofprop holding the current property
+ * @dev: device to use for interation (struct udevice *)
+ */
+#define dev_for_each_property(prop, dev) \
+	for (int ret_prop = dev_read_first_prop(dev, &prop); \
+	     !ret_prop; \
+	     ret_prop = dev_read_next_prop(&prop))
 
 #endif

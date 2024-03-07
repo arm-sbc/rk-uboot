@@ -122,6 +122,9 @@ config ARM_ERRATA_852421
 config ARM_ERRATA_852423
 	bool
 
+config ARM_ZERO_CNTVOFF
+	bool
+
 config CPU_ARM720T
 	bool
 	select SYS_CACHE_SHIFT_5
@@ -340,6 +343,10 @@ config ARM64_SUPPORT_AARCH32
 	help
 	  This ARM64 system supports AArch32 execution state.
 
+config ARM_SMP
+	bool "Enable ARM Symmetric Multiprocessing"
+	default n
+
 choice
 	prompt "Target select"
 	default TARGET_HIKEY
@@ -556,6 +563,16 @@ config TARGET_VEXPRESS_CA15_TC2
 	select CPU_V7
 	select CPU_V7_HAS_NONSEC
 	select CPU_V7_HAS_VIRT
+
+config ARCH_BCMSTB
+	bool "Broadcom BCM7XXX family"
+	select CPU_V7A
+	select DM
+	select OF_CONTROL
+	select OF_PRIOR_STAGE
+	help
+	  This enables support for Broadcom ARM-based set-top box
+	  chipsets, including the 7445 family of chips.
 
 config TARGET_VEXPRESS_CA5X2
 	bool "Support vexpress_ca5x2"
@@ -1132,22 +1149,22 @@ config ARCH_ROCKCHIP
 	select SYS_MALLOC_F
 	select SYS_THUMB_BUILD if !ARM64
 	select SPL_SYS_MALLOC_SIMPLE if SPL
-	select DM_GPIO
-	select DM_MMC if !DM_RAMDISK
+	imply DM_GPIO
 	select DM_SERIAL
 	select DM_SPI
 	select DM_SPI_FLASH
 	select DM_USB if USB
-	select CMD_ROCKUSB if USB_GADGET_DOWNLOAD
 	select ENABLE_ARM_SOC_BOOT0_HOOK
 	select SYS_NS16550
 	select SPI
 	select DEBUG_UART_BOARD_INIT
 	select PANIC_HANG
+	imply DM_MMC
 	imply DM_I2C
 	imply DM_PWM
 	imply DM_REGULATOR
 	imply CMD_FASTBOOT
+	imply CMD_ROCKUSB
 	imply FASTBOOT
 	imply FAT_WRITE
 	imply USB_FUNCTION_FASTBOOT
@@ -1175,6 +1192,8 @@ source "arch/arm/mach-aspeed/Kconfig"
 source "arch/arm/mach-at91/Kconfig"
 
 source "arch/arm/mach-bcm283x/Kconfig"
+
+source "arch/arm/mach-bcmstb/Kconfig"
 
 source "arch/arm/mach-davinci/Kconfig"
 

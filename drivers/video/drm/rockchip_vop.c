@@ -31,6 +31,14 @@ static inline int us_to_vertical_line(struct drm_display_mode *mode, int us)
 	return us * mode->clock / mode->htotal / 1000;
 }
 
+static inline void set_vop_mcu_rs(struct vop *vop, int v)
+{
+	if (dm_gpio_is_valid(&vop->mcu_rs_gpio))
+		dm_gpio_set_value(&vop->mcu_rs_gpio, v);
+	else
+		VOP_CTRL_SET(vop, mcu_rs, v);
+}
+
 static int to_vop_csc_mode(int csc_mode)
 {
 	switch (csc_mode) {
@@ -55,6 +63,14 @@ static bool is_yuv_output(uint32_t bus_format)
 	case MEDIA_BUS_FMT_YUV10_1X30:
 	case MEDIA_BUS_FMT_UYYVYY8_0_5X24:
 	case MEDIA_BUS_FMT_UYYVYY10_0_5X30:
+	case MEDIA_BUS_FMT_YUYV8_2X8:
+	case MEDIA_BUS_FMT_YVYU8_2X8:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
+	case MEDIA_BUS_FMT_VYUY8_2X8:
+	case MEDIA_BUS_FMT_YUYV8_1X16:
+	case MEDIA_BUS_FMT_YVYU8_1X16:
+	case MEDIA_BUS_FMT_UYVY8_1X16:
+	case MEDIA_BUS_FMT_VYUY8_1X16:
 		return true;
 	default:
 		return false;
@@ -76,6 +92,19 @@ static bool is_uv_swap(uint32_t bus_format, uint32_t output_mode)
 	     bus_format == MEDIA_BUS_FMT_YUV10_1X30) &&
 	    (output_mode == ROCKCHIP_OUT_MODE_AAAA ||
 	     output_mode == ROCKCHIP_OUT_MODE_P888))
+		return true;
+	else
+		return false;
+}
+
+static bool is_rb_swap(uint32_t bus_format, uint32_t output_mode)
+{
+	/*
+	 * The default component order of serial rgb3x8 formats
+	 * is BGR. So it is needed to enable RB swap.
+	 */
+	if (bus_format == MEDIA_BUS_FMT_RGB888_3X8 ||
+	    bus_format == MEDIA_BUS_FMT_RGB888_DUMMY_4X8)
 		return true;
 	else
 		return false;
@@ -226,6 +255,7 @@ static int rockchip_vop_init(struct display_state *state)
 	bool yuv_overlay = false, post_r2y_en = false, post_y2r_en = false;
 	u16 post_csc_mode;
 	bool dclk_inv;
+	char output_type_name[30] = {0};
 
 	vop = malloc(sizeof(*vop));
 	if (!vop)
@@ -249,6 +279,12 @@ static int rockchip_vop_init(struct display_state *state)
 	vop->win_csc = vop_data->win_csc;
 	vop->version = vop_data->version;
 
+	printf("VOP:0x%8p update mode to: %dx%d%s%d, type:%s\n",
+	       vop->regs, mode->crtc_hdisplay, mode->vdisplay,
+	       mode->flags & DRM_MODE_FLAG_INTERLACE ? "i" : "p",
+	       mode->vrefresh,
+	       rockchip_get_output_if_name(conn_state->output_if, output_type_name));
+
 	/* Process 'assigned-{clocks/clock-parents/clock-rates}' properties */
 	ret = clk_set_defaults(crtc_state->dev);
 	if (ret)
@@ -256,15 +292,21 @@ static int rockchip_vop_init(struct display_state *state)
 
 	ret = clk_get_by_name(crtc_state->dev, "dclk_vop", &dclk);
 	if (!ret)
-		ret = clk_set_rate(&dclk, mode->clock * 1000);
+		ret = clk_set_rate(&dclk, mode->crtc_clock * 1000);
 	if (IS_ERR_VALUE(ret)) {
 		printf("%s: Failed to set dclk: ret=%d\n", __func__, ret);
 		return ret;
 	}
+	printf("VOP:0x%8p set crtc_clock to %dKHz\n", vop->regs, mode->crtc_clock);
 
 	memcpy(vop->regsbak, vop->regs, vop_data->reg_len);
 
 	rockchip_vop_init_gamma(vop, state);
+
+	ret = gpio_request_by_name(crtc_state->dev, "mcu-rs-gpios",
+				   0, &vop->mcu_rs_gpio, GPIOD_IS_OUT);
+	if (ret && ret != -ENOENT)
+		printf("%s: Cannot get mcu rs GPIO: %d\n", __func__, ret);
 
 	VOP_CTRL_SET(vop, global_regdone_en, 1);
 	VOP_CTRL_SET(vop, axi_outstanding_max_num, 30);
@@ -277,7 +319,10 @@ static int rockchip_vop_init(struct display_state *state)
 	VOP_CTRL_SET(vop, win_channel[2], 0x56);
 	VOP_CTRL_SET(vop, dsp_blank, 0);
 
-	dclk_inv = (mode->flags & DRM_MODE_FLAG_PPIXDATA) ? 0 : 1;
+	dclk_inv = (conn_state->bus_flags & DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE) ? 1 : 0;
+	/* For improving signal quality, dclk need to be inverted by default on rv1106. */
+	if ((VOP_MAJOR(vop->version) == 2 && VOP_MINOR(vop->version) == 12))
+		dclk_inv = !dclk_inv;
 	VOP_CTRL_SET(vop, dclk_pol, dclk_inv);
 
 	val = 0x8;
@@ -294,7 +339,7 @@ static int rockchip_vop_init(struct display_state *state)
 		VOP_CTRL_SET(vop, lvds_pin_pol, val);
 		VOP_CTRL_SET(vop, lvds_dclk_pol, dclk_inv);
 		if (!IS_ERR_OR_NULL(vop->grf))
-			VOP_GRF_SET(vop, grf_dclk_inv, !dclk_inv);
+			VOP_GRF_SET(vop, grf_dclk_inv, dclk_inv);
 		break;
 	case DRM_MODE_CONNECTOR_eDP:
 		VOP_CTRL_SET(vop, edp_en, 1);
@@ -379,8 +424,9 @@ static int rockchip_vop_init(struct display_state *state)
 	VOP_CTRL_SET(vop, hdmi_dclk_out_en,
 		     conn_state->output_mode == ROCKCHIP_OUT_MODE_YUV420 ? 1 : 0);
 
-	if (is_uv_swap(conn_state->bus_format, conn_state->output_mode))
-		VOP_CTRL_SET(vop, dsp_data_swap, DSP_RB_SWAP);
+	if (is_uv_swap(conn_state->bus_format, conn_state->output_mode) ||
+	    is_rb_swap(conn_state->bus_format, conn_state->output_mode))
+		VOP_CTRL_SET(vop, dsp_rb_swap, 1);
 	else
 		VOP_CTRL_SET(vop, dsp_data_swap, 0);
 
@@ -651,12 +697,12 @@ static int rockchip_vop_set_plane(struct display_state *state)
 	struct drm_display_mode *mode = &conn_state->mode;
 	u32 act_info, dsp_info, dsp_st, dsp_stx, dsp_sty;
 	struct vop *vop = crtc_state->private;
-	int src_w = crtc_state->src_w;
-	int src_h = crtc_state->src_h;
-	int crtc_x = crtc_state->crtc_x;
-	int crtc_y = crtc_state->crtc_y;
-	int crtc_w = crtc_state->crtc_w;
-	int crtc_h = crtc_state->crtc_h;
+	int src_w = crtc_state->src_rect.w;
+	int src_h = crtc_state->src_rect.h;
+	int crtc_x = crtc_state->crtc_rect.x;
+	int crtc_y = crtc_state->crtc_rect.y;
+	int crtc_w = crtc_state->crtc_rect.w;
+	int crtc_h = crtc_state->crtc_rect.h;
 	int xvir = crtc_state->xvir;
 	int x_mirror = 0, y_mirror = 0;
 
@@ -803,12 +849,12 @@ static int rockchip_vop_send_mcu_cmd(struct display_state *state,
 	if (vop) {
 		switch (type) {
 		case MCU_WRCMD:
-			VOP_CTRL_SET(vop, mcu_rs, 0);
+			set_vop_mcu_rs(vop, 0);
 			VOP_CTRL_SET(vop, mcu_rw_bypass_port, value);
-			VOP_CTRL_SET(vop, mcu_rs, 1);
+			set_vop_mcu_rs(vop, 1);
 			break;
 		case MCU_WRDATA:
-			VOP_CTRL_SET(vop, mcu_rs, 1);
+			set_vop_mcu_rs(vop, 1);
 			VOP_CTRL_SET(vop, mcu_rw_bypass_port, value);
 			break;
 		case MCU_SETBYPASS:
@@ -822,6 +868,63 @@ static int rockchip_vop_send_mcu_cmd(struct display_state *state,
 	return 0;
 }
 
+static int rockchip_vop_mode_valid(struct display_state *state)
+{
+	struct connector_state *conn_state = &state->conn_state;
+	struct drm_display_mode *mode = &conn_state->mode;
+	struct videomode vm;
+
+	drm_display_mode_to_videomode(mode, &vm);
+
+	if (vm.hactive < 32 || vm.vactive < 32 ||
+	    (vm.hfront_porch * vm.hsync_len * vm.hback_porch *
+	     vm.vfront_porch * vm.vsync_len * vm.vback_porch == 0)) {
+		printf("ERROR: unsupported display timing\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int rockchip_vop_plane_check(struct display_state *state)
+{
+	struct crtc_state *crtc_state = &state->crtc_state;
+	const struct rockchip_crtc *crtc = crtc_state->crtc;
+	const struct vop_data *vop_data = crtc->data;
+	const struct vop_win *win = vop_data->win;
+	struct display_rect *src = &crtc_state->src_rect;
+	struct display_rect *dst = &crtc_state->crtc_rect;
+	int min_scale, max_scale;
+	int hscale, vscale;
+
+	min_scale = win->scl ? FRAC_16_16(1, 8) : VOP_PLANE_NO_SCALING;
+	max_scale = win->scl ? FRAC_16_16(8, 1) : VOP_PLANE_NO_SCALING;
+
+	hscale = display_rect_calc_hscale(src, dst, min_scale, max_scale);
+	vscale = display_rect_calc_vscale(src, dst, min_scale, max_scale);
+	if (hscale < 0 || vscale < 0) {
+		printf("ERROR: scale factor is out of range\n");
+		return -ERANGE;
+	}
+
+	return 0;
+}
+
+static int rockchip_vop_mode_fixup(struct display_state *state)
+{
+	struct crtc_state *crtc_state = &state->crtc_state;
+	struct connector_state *conn_state = &state->conn_state;
+	struct drm_display_mode *mode = &conn_state->mode;
+
+	drm_mode_set_crtcinfo(mode, CRTC_INTERLACE_HALVE_V | CRTC_STEREO_DOUBLE);
+
+	mode->crtc_clock *= rockchip_drm_get_cycles_per_pixel(conn_state->bus_format);
+	if (crtc_state->mcu_timing.mcu_pix_total)
+		mode->crtc_clock *= crtc_state->mcu_timing.mcu_pix_total + 1;
+
+	return 0;
+}
+
 const struct rockchip_crtc_funcs rockchip_vop_funcs = {
 	.preinit = rockchip_vop_preinit,
 	.init = rockchip_vop_init,
@@ -831,4 +934,7 @@ const struct rockchip_crtc_funcs rockchip_vop_funcs = {
 	.disable = rockchip_vop_disable,
 	.fixup_dts = rockchip_vop_fixup_dts,
 	.send_mcu_cmd = rockchip_vop_send_mcu_cmd,
+	.mode_valid = rockchip_vop_mode_valid,
+	.plane_check = rockchip_vop_plane_check,
+	.mode_fixup = rockchip_vop_mode_fixup,
 };

@@ -10,11 +10,13 @@
 #include <efi_loader.h>
 #include <iomem.h>
 #include <stacktrace.h>
+#ifdef CONFIG_ROCKCHIP_MINIDUMP
+#include <rk_mini_dump.h>
+#endif
 
 DECLARE_GLOBAL_DATA_PTR;
 
-#if defined(CONFIG_SPL_BUILD) || !defined(CONFIG_IRQ)
-
+#if !CONFIG_IS_ENABLED(IRQ)
 int interrupt_init(void)
 {
 	return 0;
@@ -33,7 +35,7 @@ int disable_interrupts(void)
 
 #define REG_BITS(val, shift, mask)	(((val) >> (shift)) & (mask))
 
-#if (!defined(CONFIG_SPL_BUILD) && !defined(CONFIG_TPL_BUILD))
+#ifndef CONFIG_SPL_BUILD
 void show_regs(struct pt_regs *regs)
 {
 	int el = current_el();
@@ -182,12 +184,19 @@ void do_bad_error(struct pt_regs *pt_regs, unsigned int esr)
 void do_sync(struct pt_regs *pt_regs, unsigned int esr)
 {
 	efi_restore_gd();
+#ifdef CONFIG_ROCKCHIP_MINIDUMP
+	if (md_no_fault_handler(pt_regs, esr)) {
+		/* Return to next instruction */
+		pt_regs->elr += 4;
+		return;
+	}
+#endif
 	printf("\"Synchronous Abort\" handler, esr 0x%08x\n", esr);
 	show_regs(pt_regs);
 	panic("Resetting CPU ...\n");
 }
 
-#if defined(CONFIG_SPL_BUILD) || !defined(CONFIG_IRQ)
+#if !CONFIG_IS_ENABLED(IRQ)
 /*
  * do_irq handles the Irq exception.
  */
@@ -220,6 +229,13 @@ void do_fiq(struct pt_regs *pt_regs, unsigned int esr)
 void __weak do_error(struct pt_regs *pt_regs, unsigned int esr)
 {
 	efi_restore_gd();
+#ifdef CONFIG_ROCKCHIP_MINIDUMP
+	if (md_no_fault_handler(pt_regs, esr)) {
+		/* Return to next instruction */
+		pt_regs->elr += 4;
+		return;
+	}
+#endif
 	printf("\"Error\" handler, esr 0x%08x\n", esr);
 	show_regs(pt_regs);
 	panic("Resetting CPU ...\n");

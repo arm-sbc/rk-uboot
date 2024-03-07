@@ -1889,10 +1889,12 @@
 		clocks = <&cru HCLK_SDMMC>, <&cru CLK_SDMMC>,
 			 <&cru SCLK_SDMMC_DRV>, <&cru SCLK_SDMMC_SAMPLE>;
 		clock-names = "biu", "ciu", "ciu-drive", "ciu-sample";
+		cd-gpios = <&gpio0 RK_PA3 GPIO_ACTIVE_HIGH>;
 		fifo-depth = <0x100>;
 		max-frequency = <200000000>;
-		pinctrl-names = "default";
+		pinctrl-names = "default", "idle";
 		pinctrl-0 = <&sdmmc0_clk &sdmmc0_cmd &sdmmc0_det &sdmmc0_bus4>;
+		pinctrl-1 = <&sdmmc0_idle_pins &sdmmc0_det>;
 		status = "disabled";
 	};
 

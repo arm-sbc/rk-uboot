@@ -9,7 +9,6 @@ ifndef CONFIG_SPL_BUILD
 
 obj-$(CONFIG_EFI) += efi/
 obj-$(CONFIG_EFI_LOADER) += efi_loader/
-obj-$(CONFIG_LZMA) += lzma/
 obj-$(CONFIG_BZIP2) += bzip2/
 obj-$(CONFIG_TIZEN) += tizen/
 obj-$(CONFIG_FIT) += libfdt/
@@ -48,6 +47,7 @@ obj-y += list_sort.o
 obj-$(CONFIG_OPTEE_CLIENT) += optee_clientApi/
 endif
 
+obj-$(CONFIG_XBC) += libxbc/
 obj-$(CONFIG_$(SPL_TPL_)AVB_LIBAVB) += avb/libavb/
 obj-$(CONFIG_$(SPL_TPL_)AVB_LIBAVB_ATX) += avb/libavb_atx/
 obj-$(CONFIG_$(SPL_TPL_)AVB_LIBAVB_USER) += avb/libavb_user/
@@ -58,10 +58,12 @@ obj-$(CONFIG_SHA1) += sha1.o
 obj-$(CONFIG_SHA256) += sha256.o
 obj-$(CONFIG_SHA512) += sha512.o
 
+obj-$(CONFIG_$(SPL_)LZMA) += lzma/
 obj-$(CONFIG_$(SPL_)ZLIB) += zlib/
 obj-$(CONFIG_$(SPL_)GZIP) += gunzip.o
 obj-$(CONFIG_$(SPL_)LZO) += lzo/
 
+obj-$(CONFIG_$(SPL_)LIB_RATIONAL) += rational.o
 
 obj-$(CONFIG_$(SPL_TPL_)SAVEENV) += qsort.o
 obj-$(CONFIG_$(SPL_TPL_)OF_LIBFDT) += libfdt/
@@ -74,6 +76,7 @@ ifdef CONFIG_SPL_BUILD
 obj-$(CONFIG_SPL_YMODEM_SUPPORT) += crc16.o
 obj-$(CONFIG_SPL_NET_SUPPORT) += net_utils.o
 endif
+obj-y += abuf.o
 obj-$(CONFIG_ADDR_MAP) += addr_map.o
 obj-y += hashtable.o
 obj-y += errno.o
@@ -96,7 +99,10 @@ obj-y += time.o
 obj-y += hexdump.o
 obj-$(CONFIG_TRACE) += trace.o
 obj-$(CONFIG_LIB_UUID) += uuid.o
+
+ifneq ($(CONFIG_LIB_HW_RAND)$(CONFIG_RNG_ROCKCHIP),yy)
 obj-$(CONFIG_LIB_RAND) += rand.o
+endif
 
 ifdef CONFIG_SPL_BUILD
 ifdef CONFIG_TPL_BUILD

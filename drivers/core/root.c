@@ -224,12 +224,8 @@ static int dm_scan_fdt_live(struct udevice *parent,
 
 	for (np = node_parent->child; np; np = np->sibling) {
 		if (pre_reloc_only &&
-#ifdef CONFIG_USING_KERNEL_DTB
-		    (!of_find_property(np, "u-boot,dm-pre-reloc", NULL) &&
-		     !of_find_property(np, "u-boot,dm-spl", NULL)))
-#else
-		     !of_find_property(np, "u-boot,dm-pre-reloc", NULL))
-#endif
+		   (!of_find_property(np, "u-boot,dm-pre-reloc", NULL) &&
+		    !of_find_property(np, "u-boot,dm-spl", NULL)))
 			continue;
 		if (!of_device_is_available(np)) {
 			pr_debug("   - ignoring disabled device\n");
@@ -241,6 +237,7 @@ static int dm_scan_fdt_live(struct udevice *parent,
 			debug("%s: ret=%d\n", np->name, ret);
 		}
 
+		/* There is no compatible in "/firmware", bind it by default. */
 		if (!pre_reloc_only && !strcmp(np->name, "firmware"))
 			ret = device_bind_driver_to_node(gd->dm_root,
 				"firmware", np->name, np_to_ofnode(np), NULL);
@@ -288,6 +285,16 @@ static int dm_scan_fdt_node(struct udevice *parent, const void *blob,
 			debug("%s: ret=%d\n", fdt_get_name(blob, offset, NULL),
 			      ret);
 		}
+
+#if CONFIG_IS_ENABLED(SCMI_FIRMWARE)
+		const char *name;
+
+		/* There is no compatible in "/firmware", bind it by default. */
+		name = fdt_get_name(blob, offset, NULL);
+		if (name && !strcmp(name, "firmware"))
+			ret = device_bind_driver_to_node(parent, "firmware",
+					name, offset_to_ofnode(offset), NULL);
+#endif
 	}
 
 	if (ret)

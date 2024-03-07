@@ -10,9 +10,15 @@
 #include <android_avb/rk_avb_ops_user.h>
 #include <asm/arch/boot_mode.h>
 #include <asm/arch/chip_info.h>
+#include <asm/arch/rk_atags.h>
 #include <write_keybox.h>
 #include <linux/mtd/mtd.h>
 #include <optee_include/OpteeClientInterface.h>
+#include <dm.h>
+#include <misc.h>
+#include <mmc.h>
+#include <stdlib.h>
+#include <usbplug.h>
 
 #ifdef CONFIG_ROCKCHIP_VENDOR_PARTITION
 #include <asm/arch/vendor.h>
@@ -93,6 +99,9 @@ int g_dnl_bind_fixup(struct usb_device_descriptor *dev, const char *name)
 		/* Fix to Rockchip's VID and PID for DFU */
 		dev->idVendor  = cpu_to_le16(0x2207);
 		dev->idProduct = cpu_to_le16(0x0107);
+	} else if (!strncmp(name, "usb_dnl_ums", 11)) {
+		dev->idVendor  = cpu_to_le16(0x2207);
+		dev->idProduct = cpu_to_le16(0x0010);
 	}
 
 	return 0;
@@ -170,10 +179,39 @@ static int rkusb_do_reset(struct fsg_common *common,
 	return 0;
 }
 
+__weak bool rkusb_usb3_capable(void)
+{
+	return false;
+}
+
+static int rkusb_do_switch_to_usb3(struct fsg_common *common,
+				   struct fsg_buffhd *bh)
+{
+	g_dnl_set_serialnumber((char *)&common->cmnd[1]);
+	rkusb_switch_to_usb3_enable(true);
+	bh->state = BUF_STATE_EMPTY;
+
+	return 0;
+}
+
 static int rkusb_do_test_unit_ready(struct fsg_common *common,
 				    struct fsg_buffhd *bh)
 {
-	common->residue = 0x06 << 24; /* Max block xfer support from host */
+	struct blk_desc *desc = &ums[common->lun].block_dev;
+	u32 usb_trb_size;
+	u16 residue;
+
+	if ((desc->if_type == IF_TYPE_MTD && desc->devnum == BLK_MTD_SPI_NOR) ||
+	    desc->if_type == IF_TYPE_SPINOR)
+		residue = 0x03; /* 128KB Max block xfer for SPI Nor */
+	else if (common->cmnd[1] == 0xf7 && FSG_BUFLEN >= 0x400000)
+		residue = 0x0a; /* Max block xfer for USB DWC3 */
+	else
+		residue = 0x06; /* Max block xfer support from host */
+
+	usb_trb_size = (1 << residue) * 4096;
+	common->usb_trb_size = min(usb_trb_size, FSG_BUFLEN);
+	common->residue = residue << 24;
 	common->data_dir = DATA_DIR_NONE;
 	bh->state = BUF_STATE_EMPTY;
 
@@ -186,13 +224,30 @@ static int rkusb_do_read_flash_id(struct fsg_common *common,
 	u8 *buf = (u8 *)bh->buf;
 	u32 len = 5;
 	enum if_type type = ums[common->lun].block_dev.if_type;
+	u32 devnum = ums[common->lun].block_dev.devnum;
+	const char *str;
 
-	if (type == IF_TYPE_MMC)
-		memcpy((void *)&buf[0], "EMMC ", 5);
-	else if (type == IF_TYPE_RKNAND)
-		memcpy((void *)&buf[0], "NAND ", 5);
-	else
-		memcpy((void *)&buf[0], "UNKN ", 5); /* unknown */
+	switch (type) {
+	case IF_TYPE_MMC:
+		str = "EMMC ";
+		break;
+	case IF_TYPE_RKNAND:
+		str = "NAND ";
+		break;
+	case IF_TYPE_MTD:
+		if (devnum == BLK_MTD_SPI_NAND)
+			str ="SNAND";
+		else if (devnum == BLK_MTD_NAND)
+			str = "NAND ";
+		else
+			str = "NOR  ";
+		break;
+	default:
+		str = "UNKN "; /* unknown */
+		break;
+	}
+
+	memcpy((void *)&buf[0], str, len);
 
 	/* Set data xfer size */
 	common->residue = common->data_size_from_cmnd = len;
@@ -247,7 +302,7 @@ static int rkusb_do_read_flash_info(struct fsg_common *common,
 	if (desc->if_type == IF_TYPE_MTD && desc->devnum == BLK_MTD_SPI_NOR) {
 		/* RV1126/RK3308 mtd spinor keep the former upgrade mode */
 #if !defined(CONFIG_ROCKCHIP_RV1126) && !defined(CONFIG_ROCKCHIP_RK3308)
-		finfo.block_size = 0x100; /* Aligned to 128KB */
+		finfo.block_size = 0x80; /* Aligned to 64KB */
 #else
 		finfo.block_size = ROCKCHIP_FLASH_BLOCK_SIZE;
 #endif
@@ -447,6 +502,18 @@ static int rkusb_do_vs_write(struct fsg_common *common)
 			data  = bh->buf + sizeof(struct vendor_item);
 
 			if (!type) {
+				#ifndef CONFIG_SUPPORT_USBPLUG
+				if (vhead->id == HDCP_14_HDMI_ID ||
+				    vhead->id == HDCP_14_HDMIRX_ID ||
+				    vhead->id == HDCP_14_DP_ID) {
+					rc = vendor_handle_hdcp(vhead);
+					if (rc < 0) {
+						curlun->sense_data = SS_WRITE_ERROR;
+						return -EIO;
+					}
+				}
+				#endif
+
 				/* Vendor storage */
 				rc = vendor_storage_write(vhead->id,
 							  (char __user *)data,
@@ -490,6 +557,41 @@ static int rkusb_do_vs_write(struct fsg_common *common)
 					}
 					if (trusty_write_ta_encryption_key((uint32_t *)(data + 8), 8) != 0) {
 						printf("trusty_write_ta_encryption_key error!");
+						curlun->sense_data = SS_WRITE_ERROR;
+						return -EIO;
+					}
+				} else if (memcmp(data, "EHUK", 4) == 0) {
+					if (vhead->size - 8 != 32) {
+						printf("check oem huk size fail!\n");
+						curlun->sense_data = SS_WRITE_ERROR;
+						return -EIO;
+					}
+					if (trusty_write_oem_huk((uint32_t *)(data + 8), 8) != 0) {
+						printf("trusty_write_oem_huk error!");
+						curlun->sense_data = SS_WRITE_ERROR;
+						return -EIO;
+					}
+				} else if (memcmp(data, "ENDA", 4) == 0) {
+					if (vhead->size - 8 != 16) {
+						printf("check oem encrypt data size fail!\n");
+						curlun->sense_data = SS_WRITE_ERROR;
+						return -EIO;
+					}
+					if (trusty_write_oem_encrypt_data((uint32_t *)(data + 8), 4) != 0) {
+						printf("trusty_write_oem_encrypt_data error!");
+						curlun->sense_data = SS_WRITE_ERROR;
+						return -EIO;
+					}
+				} else if (memcmp(data, "OTPK", 4) == 0) {
+					uint32_t key_len = vhead->size - 9;
+					uint8_t key_id = *((uint8_t *)data + 8);
+					if (key_len != 16 && key_len != 24 && key_len != 32) {
+						printf("check oem otp key size fail!\n");
+						curlun->sense_data = SS_WRITE_ERROR;
+						return -EIO;
+					}
+					if (trusty_write_oem_otp_key(key_id, (uint8_t *)(data + 9), key_len) != 0) {
+						printf("trusty_write_oem_huk error!");
 						curlun->sense_data = SS_WRITE_ERROR;
 						return -EIO;
 					}
@@ -590,6 +692,31 @@ static int rkusb_do_vs_read(struct fsg_common *common)
 #else
 			printf("Please enable CONFIG_RK_AVB_LIBAVB_USER!\n");
 #endif
+		} else if (type == 3) {
+			/* efuse or otp*/
+#ifdef CONFIG_OPTEE_CLIENT
+			if (vhead->id == 120) {
+				u8 value;
+				char *written_str = "key is written!";
+				char *not_written_str = "key is not written!";
+				if (trusty_ta_encryption_key_is_written(&value) != 0) {
+					printf("trusty_ta_encryption_key_is_written error!");
+					return -EIO;
+				}
+				if (value) {
+					memcpy(data, written_str, strlen(written_str));
+					vhead->size = strlen(written_str);
+				} else {
+					memcpy(data, not_written_str, strlen(not_written_str));
+					vhead->size = strlen(not_written_str);
+				}
+			} else {
+				printf("Unknown tag\n");
+				return -EIO;
+			}
+#else
+			printf("Please enable CONFIG_OPTEE_CLIENT\n");
+#endif
 		} else {
 			return -EINVAL;
 		}
@@ -605,6 +732,119 @@ static int rkusb_do_vs_read(struct fsg_common *common)
 }
 #endif
 
+static int rkusb_do_switch_storage(struct fsg_common *common)
+{
+	enum if_type type, cur_type = ums[common->lun].block_dev.if_type;
+	int devnum, cur_devnum = ums[common->lun].block_dev.devnum;
+	struct blk_desc *block_dev;
+	u32 media = BOOT_TYPE_UNKNOWN;
+
+	media = 1 << common->cmnd[1];
+
+	switch (media) {
+#ifdef CONFIG_MMC
+	case BOOT_TYPE_EMMC:
+		type = IF_TYPE_MMC;
+		devnum = 0;
+		mmc_initialize(gd->bd);
+		break;
+#endif
+	case BOOT_TYPE_MTD_BLK_NAND:
+		type = IF_TYPE_MTD;
+		devnum = 0;
+		break;
+	case BOOT_TYPE_MTD_BLK_SPI_NAND:
+		type = IF_TYPE_MTD;
+		devnum = 1;
+		break;
+	case BOOT_TYPE_MTD_BLK_SPI_NOR:
+		type = IF_TYPE_MTD;
+		devnum = 2;
+		break;
+	default:
+		printf("Bootdev 0x%x is not support\n", media);
+		return -ENODEV;
+	}
+
+	if (cur_type == type && cur_devnum == devnum)
+		return 0;
+
+#if CONFIG_IS_ENABLED(SUPPORT_USBPLUG)
+	block_dev = usbplug_blk_get_devnum_by_type(type, devnum);
+#else
+	block_dev = blk_get_devnum_by_type(type, devnum);
+#endif
+	if (!block_dev) {
+		printf("Bootdev if_type=%d num=%d toggle fail\n", type, devnum);
+		return -ENODEV;
+	}
+
+	ums[common->lun].num_sectors = block_dev->lba;
+	ums[common->lun].block_dev = *block_dev;
+
+	printf("RKUSB: LUN %d, dev %d, hwpart %d, sector %#x, count %#x\n",
+	       0,
+	       ums[common->lun].block_dev.devnum,
+	       ums[common->lun].block_dev.hwpart,
+	       ums[common->lun].start_sector,
+	       ums[common->lun].num_sectors);
+
+	return 0;
+}
+
+static int rkusb_do_get_storage_info(struct fsg_common *common,
+				     struct fsg_buffhd *bh)
+{
+	enum if_type type = ums[common->lun].block_dev.if_type;
+	int devnum = ums[common->lun].block_dev.devnum;
+	u32 media = BOOT_TYPE_UNKNOWN;
+	u32 len = common->data_size;
+	u8 *buf = (u8 *)bh->buf;
+
+	if (len > 4)
+		len = 4;
+
+	switch (type) {
+	case IF_TYPE_MMC:
+		media = BOOT_TYPE_EMMC;
+		break;
+
+	case IF_TYPE_SD:
+		media = BOOT_TYPE_SD0;
+		break;
+
+	case IF_TYPE_MTD:
+		if (devnum == BLK_MTD_SPI_NAND)
+			media = BOOT_TYPE_MTD_BLK_SPI_NAND;
+		else if (devnum == BLK_MTD_NAND)
+			media = BOOT_TYPE_NAND;
+		else
+			media = BOOT_TYPE_MTD_BLK_SPI_NOR;
+		break;
+
+	case IF_TYPE_SCSI:
+		media = BOOT_TYPE_SATA;
+		break;
+
+	case IF_TYPE_RKNAND:
+		media = BOOT_TYPE_NAND;
+		break;
+
+	case IF_TYPE_NVME:
+		media = BOOT_TYPE_PCIE;
+		break;
+
+	default:
+		break;
+	}
+
+	memcpy((void *)&buf[0], (void *)&media, len);
+	common->residue = len;
+	common->data_size_from_cmnd = len;
+
+	return len;
+}
+
 static int rkusb_do_read_capacity(struct fsg_common *common,
 				  struct fsg_buffhd *bh)
 {
@@ -619,10 +859,20 @@ static int rkusb_do_read_capacity(struct fsg_common *common,
 	 * bit[2]: First 4M Access, 0: Disabled;
 	 * bit[3]: Read LBA On, 0: Disabed (default);
 	 * bit[4]: New Vendor Storage API, 0: Disabed;
-	 * bit[5:63}: Reserved.
+	 * bit[5]: Read uart data from ram
+	 * bit[6]: Read IDB config
+	 * bit[7]: Read SecureMode
+	 * bit[8]: New IDB feature
+	 * bit[9]: Get storage media info
+	 * bit[10]: LBAwrite Parity
+	 * bit[11]: Read Otp Data
+	 * bit[12]: usb3 download
+	 * bit[13]: Write OTP proof
+	 * bit[14]: Write Cipher Key
+	 * bit[15:63}: Reserved.
 	 */
 	memset((void *)&buf[0], 0, len);
-	if (type == IF_TYPE_MMC || type == IF_TYPE_SD)
+	if (type == IF_TYPE_MMC || type == IF_TYPE_SD || type == IF_TYPE_NVME)
 		buf[0] = BIT(0) | BIT(2) | BIT(4);
 	else
 		buf[0] = BIT(0) | BIT(4);
@@ -637,15 +887,53 @@ static int rkusb_do_read_capacity(struct fsg_common *common,
 		buf[0] |= (1 << 6);
 #endif
 
-#if defined(CONFIG_ROCKCHIP_RK3568)
+#if defined(CONFIG_ROCKCHIP_NEW_IDB)
 	buf[1] = BIT(0);
 #endif
+	buf[1] |= BIT(1); /* Switch Storage */
+	buf[1] |= BIT(2); /* LBAwrite Parity */
+
+	if (rkusb_usb3_capable() && !rkusb_force_usb2_enabled())
+		buf[1] |= BIT(4);
+	else
+		buf[1] &= ~BIT(4);
+
+#ifdef CONFIG_ROCKCHIP_OTP
+	buf[1] |= BIT(3); /* Read Otp Data */
+	buf[1] |= BIT(5); /* Write OTP proof */
+	buf[1] |= BIT(6); /* Write Cipher Key */
+#endif
+
 	/* Set data xfer size */
 	common->residue = len;
 	common->data_size_from_cmnd = len;
 
 	return len;
 }
+
+#ifdef CONFIG_ROCKCHIP_OTP
+static int rkusb_do_read_otp(struct fsg_common *common,
+			       struct fsg_buffhd *bh)
+{
+	u32 len = common->data_size;
+	u32 type = common->cmnd[1];
+	u8 *buf = (u8 *)bh->buf;
+	struct udevice *dev;
+
+	buf[0] = 0;
+	if (type == 0) { /* soc uuid */
+		if (!uclass_get_device_by_driver(UCLASS_MISC, DM_GET_DRIVER(rockchip_otp), &dev)) {
+			if (!misc_read(dev, CFG_CPUID_OFFSET, (void *)&buf[1], len))
+				buf[0] = len;
+		}
+	}
+
+	common->residue = len;
+	common->data_size_from_cmnd = len;
+
+	return len;
+}
+#endif
 
 static void rkusb_fixup_cbwcb(struct fsg_common *common,
 			      struct fsg_buffhd *bh)
@@ -747,9 +1035,22 @@ static int rkusb_cmd_process(struct fsg_common *common,
 		rc = RKUSB_RC_FINISHED;
 		break;
 #endif
+	case RKUSB_SWITCH_STORAGE:
+		*reply = rkusb_do_switch_storage(common);
+		rc = RKUSB_RC_FINISHED;
+		break;
+	case RKUSB_GET_STORAGE_MEDIA:
+		*reply = rkusb_do_get_storage_info(common, bh);
+		rc = RKUSB_RC_FINISHED;
+		break;
 
 	case RKUSB_READ_CAPACITY:
 		*reply = rkusb_do_read_capacity(common, bh);
+		rc = RKUSB_RC_FINISHED;
+		break;
+
+	case RKUSB_SWITCH_USB3:
+		*reply = rkusb_do_switch_to_usb3(common, bh);
 		rc = RKUSB_RC_FINISHED;
 		break;
 
@@ -757,6 +1058,13 @@ static int rkusb_cmd_process(struct fsg_common *common,
 		*reply = rkusb_do_reset(common, bh);
 		rc = RKUSB_RC_FINISHED;
 		break;
+
+#ifdef CONFIG_ROCKCHIP_OTP
+	case RKUSB_READ_OTP_DATA:
+		*reply = rkusb_do_read_otp(common, bh);
+		rc = RKUSB_RC_FINISHED;
+		break;
+#endif
 
 	case RKUSB_READ_10:
 	case RKUSB_WRITE_10:
@@ -774,7 +1082,6 @@ static int rkusb_cmd_process(struct fsg_common *common,
 	case RKUSB_SET_RESET_FLAG:
 	case RKUSB_SPI_READ_10:
 	case RKUSB_SPI_WRITE_10:
-	case RKUSB_SESSION:
 		/* Fall through */
 	default:
 		rc = RKUSB_RC_UNKNOWN_CMND;
@@ -782,6 +1089,29 @@ static int rkusb_cmd_process(struct fsg_common *common,
 	}
 
 	return rc;
+}
+
+int rkusb_do_check_parity(struct fsg_common *common)
+{
+	int ret = 0, rc;
+	u32 parity, i, usb_parity, lba, len;
+	static u32 usb_check_buffer[1024 * 256];
+
+	usb_parity = common->cmnd[9] | (common->cmnd[10] << 8) |
+			(common->cmnd[11] << 16) | (common->cmnd[12] << 24);
+
+	if (common->cmnd[0] == SC_WRITE_10 && (usb_parity)) {
+		lba = get_unaligned_be32(&common->cmnd[2]);
+		len = common->data_size_from_cmnd >> 9;
+		rc = blk_dread(&ums[common->lun].block_dev, lba, len, usb_check_buffer);
+		parity = 0x000055aa;
+		for (i = 0; i < len * 128; i++)
+			parity += usb_check_buffer[i];
+		if (!rc || parity != usb_parity)
+			common->phase_error = 1;
+	}
+
+	return ret;
 }
 
 DECLARE_GADGET_BIND_CALLBACK(rkusb_ums_dnl, fsg_add);

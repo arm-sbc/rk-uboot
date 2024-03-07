@@ -5,6 +5,7 @@
  */
 #include <common.h>
 #include <clk.h>
+#include <dm.h>
 #include <asm/io.h>
 #include <asm/arch/cpu.h>
 #include <asm/arch/hardware.h>
@@ -34,9 +35,6 @@ DECLARE_GLOBAL_DATA_PTR;
 #define GRF_GPIO1D_DS_1		0x234
 #define GRF_GPIO1D_DS_2		0x238
 #define GRF_SOC_CON4		0x510
-#define EDP_PHY_GRF_BASE	0xfdcb0000
-#define EDP_PHY_GRF_CON0	(EDP_PHY_GRF_BASE + 0x00)
-#define EDP_PHY_GRF_CON10	(EDP_PHY_GRF_BASE + 0x28)
 #define PMU_BASE_ADDR		0xfdd90000
 #define PMU_NOC_AUTO_CON0	(0x70)
 #define PMU_NOC_AUTO_CON1	(0x74)
@@ -779,6 +777,23 @@ void board_debug_uart_init(void)
 #endif
 }
 
+int fit_standalone_release(char *id, uintptr_t entry_point)
+{
+	/* risc-v configuration: */
+	/* Reset the scr1 */
+	writel(0x04000400, CRU_BASE + CRU_SOFTRST_CON26);
+	udelay(100);
+
+	/* set the scr1 addr */
+	writel((0xffff0000) | (entry_point >> 16), GRF_BASE + GRF_SOC_CON4);
+	udelay(10);
+
+	/* release the scr1 */
+	writel(0x04000000, CRU_BASE + CRU_SOFTRST_CON26);
+
+	return 0;
+}
+
 #if defined(CONFIG_SPL_BUILD) && !defined(CONFIG_TPL_BUILD)
 static void qos_priority_init(void)
 {
@@ -863,10 +878,6 @@ int arch_cpu_init(void)
 	}
 #endif
 
-	/* Disable eDP phy by default */
-	writel(0x00070007, EDP_PHY_GRF_CON10);
-	writel(0x0ff10ff1, EDP_PHY_GRF_CON0);
-
 	/* Set core pvtpll ring length */
 	writel(0x00ff002b, CPU_GRF_BASE + GRF_CORE_PVTPLL_CON0);
 
@@ -917,13 +928,24 @@ int arch_cpu_init(void)
 
 	/* Set the fspi to secure */
 	writel(((0x1 << 14) << 16) | (0x0 << 14), SGRF_BASE + SGRF_SOC_CON3);
+#else /* U-Boot */
+	/* uboot: config iomux */
+#if defined(CONFIG_ROCKCHIP_SFC_IOMUX)
+	writel((0x70002000), GRF_BASE + GRF_GPIO1C_IOMUX_H);
+	writel((0x77771111), GRF_BASE + GRF_GPIO1D_IOMUX_L);
+	writel((0x00070001), GRF_BASE + GRF_GPIO1D_IOMUX_H);
+#elif defined(CONFIG_ROCKCHIP_EMMC_IOMUX)
+	writel((0x77771111), GRF_BASE + GRF_GPIO1B_IOMUX_H);
+	writel((0x77771111), GRF_BASE + GRF_GPIO1C_IOMUX_L);
+	writel((0x07770111), GRF_BASE + GRF_GPIO1C_IOMUX_H);
+#endif
 #endif
 
 	return 0;
 }
 
 #ifdef CONFIG_SPL_BUILD
-int spl_fit_standalone_release(uintptr_t entry_point)
+int spl_fit_standalone_release(char *id, uintptr_t entry_point)
 {
 	/* Reset the scr1 */
 	writel(0x04000400, CRU_BASE + CRU_SOFTRST_CON26);
@@ -938,7 +960,7 @@ int spl_fit_standalone_release(uintptr_t entry_point)
 }
 #endif
 
-#ifdef CONFIG_CLK_SCMI
+#if CONFIG_IS_ENABLED(CLK_SCMI)
 #include <dm.h>
 /*
  * armclk: 1104M:
@@ -1179,3 +1201,19 @@ int rk_board_fdt_fixup(const void *blob)
 
 	return 0;
 }
+
+#if !defined(CONFIG_SPL_BUILD) && defined(CONFIG_ROCKCHIP_DMC_FSP)
+int rk_board_init(void)
+{
+	struct udevice *dev;
+	u32 ret = 0;
+
+	ret = uclass_get_device_by_driver(UCLASS_DMC, DM_GET_DRIVER(dmc_fsp), &dev);
+	if (ret) {
+		printf("dmc_fsp failed, ret=%d\n", ret);
+		return 0;
+	}
+
+	return 0;
+}
+#endif

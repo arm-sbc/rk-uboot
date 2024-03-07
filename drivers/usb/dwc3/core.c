@@ -30,6 +30,7 @@
 #include "io.h"
 
 #include "linux-compat.h"
+#include "rockusb.h"
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -402,7 +403,12 @@ static void dwc3_phy_setup(struct dwc3 *dwc)
 	if (dwc->tx_de_emphasis_quirk)
 		reg |= DWC3_GUSB3PIPECTL_TX_DEEPH(dwc->tx_de_emphasis);
 
-	if (dwc->dis_u3_susphy_quirk)
+	/*
+	 * For some Rokchip SoCs like RK3588, if the USB3 PHY is suspended
+	 * in U-Boot would cause the PHY initialize abortively in Linux Kernel,
+	 * so disable the DWC3_GUSB3PIPECTL_SUSPHY feature here to fix it.
+	 */
+	if (dwc->dis_u3_susphy_quirk || CONFIG_IS_ENABLED(ARCH_ROCKCHIP))
 		reg &= ~DWC3_GUSB3PIPECTL_SUSPHY;
 
 	dwc3_writel(dwc->regs, DWC3_GUSB3PIPECTL(0), reg);
@@ -719,6 +725,8 @@ int dwc3_uboot_init(struct dwc3_device *dwc3_dev)
 	 */
 	hird_threshold = 12;
 
+	dwc->check_linksts = true;
+	dwc->ts = get_timer(0);
 	dwc->maximum_speed = dwc3_dev->maximum_speed;
 	dwc->has_lpm_erratum = dwc3_dev->has_lpm_erratum;
 	if (dwc3_dev->lpm_nyet_threshold)
@@ -749,6 +757,9 @@ int dwc3_uboot_init(struct dwc3_device *dwc3_dev)
 	/* default to superspeed if no maximum_speed passed */
 	if (dwc->maximum_speed == USB_SPEED_UNKNOWN)
 		dwc->maximum_speed = USB_SPEED_SUPER;
+	else if (dwc->maximum_speed == USB_SPEED_SUPER &&
+		 rkusb_force_usb2_enabled())
+		dwc->maximum_speed = USB_SPEED_HIGH;
 
 	dwc->lpm_nyet_threshold = lpm_nyet_threshold;
 	dwc->tx_de_emphasis = tx_de_emphasis;

@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <command.h>
 #include <mmc.h>
+#include <optee_include/OpteeClientLoadTa.h>
 #include <optee_include/OpteeClientMem.h>
 #include <optee_include/OpteeClientRPC.h>
 #include <optee_include/teesmc.h>
@@ -54,107 +55,12 @@ TEEC_Result OpteeRpcFree(uint32_t Address)
 	return TEEC_SUCCESS;
 }
 
-int is_uuid_equal(TEE_UUID uuid1, TEEC_UUID uuid2)
-{
-	bool a, b, c;
-
-	a = (uuid1.timeLow == uuid2.timeLow);
-	b = (uuid1.timeMid == uuid2.timeMid);
-	c = (uuid1.timeHiAndVersion == uuid2.timeHiAndVersion);
-	if ((a & b & c) == 0) {
-		return 0;
-	} else {
-		if (memcmp(uuid1.clockSeqAndNode,
-			   uuid2.clockSeqAndNode, 8) == 0) {
-			return 1;
-		} else {
-			return 0;
-		}
-	}
-}
-
-/*
- * Load a TA from storage into memory and provide it back to OpTEE.
- * Param[0] = IN: struct tee_rpc_load_ta_cmd
- * Param[1] = IN: all-zero OUT: TA Image allocated
- */
-TEEC_Result OpteeRpcCmdLoadTa(t_teesmc32_arg *TeeSmc32Arg)
-{
-	TEEC_Result TeecResult = TEEC_SUCCESS;
-	t_teesmc32_param *TeeSmc32Param = NULL;
-	struct tee_rpc_load_ta_cmd *TeeLoadTaCmd = NULL;
-	uint32_t TeeLoadTaCmdSize = 0;
-
-	if (TeeSmc32Arg->num_params != 2) {
-		TeecResult = TEEC_ERROR_BAD_PARAMETERS;
-		goto Exit;
-	}
-
-	TEEC_UUID TA_RK_KEYMASTER_UUID = {0x258be795, 0xf9ca, 0x40e6,
-			{0xa8, 0x69, 0x9c, 0xe6, 0x88, 0x6c, 0x5d, 0x5d} };
-	TeeSmc32Param = TEESMC32_GET_PARAMS(TeeSmc32Arg);
-	TeeLoadTaCmd = (struct tee_rpc_load_ta_cmd *)
-					(size_t)TeeSmc32Param[0].u.memref.buf_ptr;
-	TeeLoadTaCmdSize = TeeSmc32Param[0].u.memref.size;
-
-	if ((TeeLoadTaCmd == NULL) ||
-		(TeeLoadTaCmdSize != sizeof(*TeeLoadTaCmd))) {
-		TeecResult = TEEC_ERROR_BAD_PARAMETERS;
-		goto Exit;
-	}
-
-	TEEC_Result Status = 0;
-	void *ImageData = NULL;
-	uint32_t ImageSize = 0;
-	size_t AllocAddress = 0;
-
-	if (is_uuid_equal(TeeLoadTaCmd->uuid, TA_RK_KEYMASTER_UUID)) {
-		ImageData = (void *)0;
-		ImageSize = 0;
-	} else {
-		ImageData = (void *)0;
-		ImageSize = 0;
-	}
-
-	if (Status != 0) {
-		TeecResult = TEEC_ERROR_ITEM_NOT_FOUND;
-		goto Exit;
-	}
-
-	AllocAddress = (size_t) OpteeClientMemAlloc(ImageSize);
-
-	if (AllocAddress == 0) {
-		TeecResult = TEEC_ERROR_OUT_OF_MEMORY;
-		goto Exit;
-	}
-
-	memcpy((void *)AllocAddress, ImageData, ImageSize);
-
-	debug("TEEC: ...TA loaded at 0x%zu of size 0x%X bytes\n",
-		AllocAddress, ImageSize);
-	debug("TEEC: ...AllocAddress[0] 0x%X ; AllocAddress[1] 0x%X bytes\n",
-		*(char *)AllocAddress, *(char *)(AllocAddress+1));
-
-	TeeLoadTaCmd->va = AllocAddress;
-
-	TeeSmc32Param[1].u.memref.buf_ptr = AllocAddress;
-	TeeSmc32Param[1].u.memref.size = ImageSize;
-
-Exit:
-	TeeSmc32Arg->ret = TeecResult;
-	TeeSmc32Arg->ret_origin = TEEC_ORIGIN_API;
-
-	debug("TEEC: OpteeRpcCmdLoadTa Exit : TeecResult=0x%X\n", TeecResult);
-
-	return TeecResult;
-}
-
 TEEC_Result OpteeRpcCmdLoadV2Ta(t_teesmc32_arg *TeeSmc32Arg)
 {
 	TEEC_Result TeecResult = TEEC_SUCCESS;
 	t_teesmc32_param *TeeSmc32Param = NULL;
-	uint8_t uuid[16];
-	int i;
+	int ta_found = 0;
+	size_t size = 0;
 
 	if (TeeSmc32Arg->num_params != 2) {
 		TeecResult = TEEC_ERROR_BAD_PARAMETERS;
@@ -163,70 +69,22 @@ TEEC_Result OpteeRpcCmdLoadV2Ta(t_teesmc32_arg *TeeSmc32Arg)
 
 	TeeSmc32Param = TEESMC32_GET_PARAMS(TeeSmc32Arg);
 
-	memcpy(uuid, (void *)&TeeSmc32Param[0].u.value, 16);
-	for (i = 0; i < 16; i++)
-		debug("TEEC: uuid 0x%x", uuid[i]);
-
-	if (TeeSmc32Param[1].u.memref.buf_ptr == 0) {
-		debug("TEEC: return size of TA, keymaster_size = 0\n");
-		TeeSmc32Param[1].u.memref.size = 0;
+	size = TeeSmc32Param[1].u.memref.size;
+	ta_found = search_ta((void *)(size_t)&TeeSmc32Param[0].u.value,
+				(void *)(size_t)TeeSmc32Param[1].u.memref.buf_ptr, &size);
+	if (ta_found == TA_BINARY_FOUND) {
+		TeeSmc32Param[1].u.memref.size = size;
+		TeecResult = TEEC_SUCCESS;
 	} else {
-		/*memcpy((void *)(size_t)TeeSmc32Param[1].u.memref.buf_ptr,
-			(void *)keymaster_data, TeeSmc32Param[1].u.memref.size);*/
-		debug("TEEC: memref.buf_ptr = 0x%llx; memref.size = 0x%llx\n",
-			(uint64_t)TeeSmc32Param[1].u.memref.buf_ptr,
-			(uint64_t)TeeSmc32Param[1].u.memref.size);
+		printf("  TA not found \n");
+		TeecResult = TEEC_ERROR_ITEM_NOT_FOUND;
 	}
 
 Exit:
 	TeeSmc32Arg->ret = TeecResult;
 	TeeSmc32Arg->ret_origin = TEEC_ORIGIN_API;
 
-	debug("TEEC: OpteeRpcCmdLoadTa Exit : TeecResult=0x%X\n", TeecResult);
-
-	return TeecResult;
-}
-
-/*
- * Free a previously loaded TA and release the memory
- * Param[0] = IN: TA Image to free
- *
- * Um, why is OpTEE holding on to this memory? The OS code suggests that OpTEE
- * is using the binary in place out of shared memory but I don't understand how
- * runtime modifications of the binary are being prevented if that's the case?
- */
-TEEC_Result OpteeRpcCmdFreeTa(t_teesmc32_arg *TeeSmc32Arg)
-{
-	TEEC_Result TeecResult = TEEC_SUCCESS;
-	t_teesmc32_param *TeeSmc32Param = NULL;
-	uint32_t ImageSize = 0;
-	size_t AllocAddress = 0;
-
-	if (TeeSmc32Arg->num_params != 1) {
-		TeecResult = TEEC_ERROR_BAD_PARAMETERS;
-		goto Exit;
-	}
-
-	TeeSmc32Param = TEESMC32_GET_PARAMS(TeeSmc32Arg);
-
-	AllocAddress = TeeSmc32Param[0].u.memref.buf_ptr;
-	ImageSize = TeeSmc32Param[0].u.memref.size;
-
-	debug("TEEC: OpteeRpcCmdFreeTa Enter: AllocAddress=0x%X, ImageSize=0x%X\n",
-			(uint32_t) AllocAddress, (uint32_t) ImageSize);
-
-	if (AllocAddress == 0) {
-		TeecResult = TEEC_ERROR_BAD_PARAMETERS;
-		goto Exit;
-	}
-
-	OpteeClientMemFree((void *)AllocAddress);
-
-Exit:
-	TeeSmc32Arg->ret = TeecResult;
-	TeeSmc32Arg->ret_origin = TEEC_ORIGIN_API;
-
-	debug("TEEC: OpteeRpcCmdFreeTa Exit : TeecResult=0x%X\n", TeecResult);
+	debug("TEEC: OpteeRpcCmdLoadV2Ta Exit : TeecResult=0x%X\n", TeecResult);
 
 	return TeecResult;
 }
@@ -272,8 +130,8 @@ TEEC_Result OpteeRpcCmdRpmb(t_teesmc32_arg *TeeSmc32Arg)
 			(RpmbRequest->block_count == 0 ?
 			1 : RpmbRequest->block_count);
 		RequestPackets_back =
-			malloc(sizeof(EFI_RK_RPMB_DATA_PACKET_BACK)
-			* global_block_count);
+			memalign(CONFIG_SYS_CACHELINE_SIZE,
+			sizeof(EFI_RK_RPMB_DATA_PACKET_BACK) * global_block_count);
 		memcpy(RequestPackets_back->stuff,
 			RequestPackets->stuff_bytes,
 			RPMB_STUFF_DATA_SIZE);
@@ -346,11 +204,7 @@ TEEC_Result OpteeRpcCmdRpmb(t_teesmc32_arg *TeeSmc32Arg)
 				break;
 			}
 
-			if (EfiStatus != 0) {
-				TeecResult = TEEC_ERROR_GENERIC;
-				break;
-			}
-
+			TeecResult = TEEC_SUCCESS;
 			break;
 		}
 
@@ -522,12 +376,13 @@ TEEC_Result OpteeRpcCmdFs(t_teesmc32_arg *TeeSmc32Arg)
 #ifdef CONFIG_OPTEE_V1
 	TeecResult = OpteeClientRkFsProcess((void *)(size_t)TeeSmc32Param[0].u.memref.buf_ptr,
 							TeeSmc32Param[0].u.memref.size);
+	TeeSmc32Arg->ret = TEEC_SUCCESS;
 #endif
 #ifdef CONFIG_OPTEE_V2
 	TeecResult = OpteeClientRkFsProcess((size_t)TeeSmc32Arg->num_params,
 							(struct tee_ioctl_param *)TeeSmc32Param);
+	TeeSmc32Arg->ret = TeecResult;
 #endif
-
 	return TeecResult;
 }
 
@@ -617,7 +472,6 @@ TEEC_Result OpteeRpcCallback(ARM_SMC_ARGS *ArmSmcArgs)
 #endif
 		case OPTEE_MSG_RPC_CMD_FS_V2: {
 			TeecResult = OpteeRpcCmdFs(TeeSmc32Arg);
-			TeeSmc32Arg->ret = TEEC_SUCCESS;
 			break;
 		}
 		case OPTEE_MSG_RPC_CMD_LOAD_TA_V2: {

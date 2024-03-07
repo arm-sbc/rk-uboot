@@ -33,9 +33,10 @@ struct dm_key_uclass_platdata {
 
 	/* ADC key */
 	u8 channel;
-	u32 adcval;
-	u32 min;
-	u32 max;
+	int in_volt;
+	int center;
+	int min;
+	int max;
 
 	/* GPIO key */
 	u32 irq;
@@ -64,6 +65,9 @@ int pwrkey_download_init(void);
 
 /* Read key */
 int key_read(int code);
+
+/* Check whether the key is exist or not, 1: exist, 0: not exist */
+int key_exist(int code);
 
 int key_bind_children(struct udevice *dev, const char *drv_name);
 

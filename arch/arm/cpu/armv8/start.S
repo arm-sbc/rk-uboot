@@ -117,6 +117,43 @@ pie_fixup_done:
 0:
 
 	/*
+	 * Enable instruction cache (if required), stack pointer,
+	 * data access alignment checks and SError.
+	 */
+#ifndef CONFIG_SYS_ICACHE_OFF
+	mov x1, #CR_I
+#else
+	mov x1, #0
+#endif
+	switch_el x2, 3f, 2f, 1f
+3:	mrs	x0, sctlr_el3
+	orr	x0, x0, x1
+	msr	sctlr_el3, x0
+#ifndef CONFIG_SUPPORT_USBPLUG
+	msr	daifclr, #4			/* Enable SError. SCR_EL3.EA=1 was already set in start.S */
+#endif
+	b	0f
+2:	mrs	x0, sctlr_el2
+	orr	x0, x0, x1
+	msr	sctlr_el2, x0
+
+	mrs	x0, hcr_el2
+	orr	x0, x0, #HCR_EL2_TGE
+	orr	x0, x0, #HCR_EL2_AMO
+#if CONFIG_IS_ENABLED(IRQ)
+	orr	x0, x0, #HCR_EL2_IMO
+#endif
+	msr	hcr_el2, x0
+	msr	daifclr, #4
+	b	0f
+1:	mrs	x0, sctlr_el1
+	orr	x0, x0, x1
+	msr	sctlr_el1, x0
+	msr	daifclr, #4
+0:
+	isb
+
+	/*
 	 * Enable SMPEN bit for coherency.
 	 * This register is not architectural but at the moment
 	 * this bit should be set for A53/A57/A72.
@@ -160,6 +197,43 @@ slave_cpu:
 	cbz	x0, slave_cpu
 	br	x0			/* branch to the given address */
 #endif /* CONFIG_ARMV8_MULTIENTRY */
+
+#if defined(CONFIG_SPL_BUILD) && defined(CONFIG_ARM_SMP)
+	mrs	x0, mpidr_el1
+	and x0, x0, #0xfff
+	cmp x0, #0
+	beq master_cpu
+
+#ifdef SMP_CPU1
+	cmp x0, #(SMP_CPU1)
+	ldr x1, =(SMP_CPU1_STACK)
+	beq slave_cpu
+#endif
+
+#ifdef SMP_CPU2
+	cmp x0, #(SMP_CPU2)
+	ldr x1, =(SMP_CPU2_STACK)
+	beq slave_cpu
+#endif
+
+#ifdef SMP_CPU3
+	cmp x0, #(SMP_CPU3)
+	ldr x1, =(SMP_CPU3_STACK)
+	beq slave_cpu
+#endif
+	dsb sy
+	isb
+
+loop:
+	wfe
+	b loop
+
+slave_cpu:
+	bic	sp, x1, #0xf
+	bl	smp_entry
+	b	loop
+#endif
+
 master_cpu:
 	bl	_main
 
@@ -262,7 +336,7 @@ ENDPROC(apply_core_errata)
 WEAK(lowlevel_init)
 	mov	x29, lr			/* Save LR */
 
-#if !defined(CONFIG_SPL_BUILD) && defined(CONFIG_IRQ)
+#if CONFIG_IS_ENABLED(IRQ)
 	branch_if_slave x0, 1f
 	ldr	x0, =GICD_BASE
 	bl	gic_init_secure
@@ -276,23 +350,6 @@ WEAK(lowlevel_init)
 	bl	gic_init_secure_percpu
 #endif
 #endif
-
-#if !defined(CONFIG_SPL_BUILD) && defined(CONFIG_IRQ)
-	/*
-	 * Setting HCR_EL2.TGE AMO IMO FMO for exception rounting to EL2
-	 */
-	mrs	x0, CurrentEL		/* check currentEL */
-	cmp	x0, 0x8
-	b.ne	end			/* currentEL != EL2 */
-
-	mrs	x9, hcr_el2
-	orr	x9, x9, #(7 << 3)	/* HCR_EL2.AMO IMO FMO set */
-	orr	x9, x9, #(1 << 27)	/* HCR_EL2.TGE set */
-	msr	hcr_el2, x9
-
-end:
-	nop
-#endif /* CONFIG_IRQ */
 
 #ifdef CONFIG_ARMV8_MULTIENTRY
 	branch_if_master x0, x1, 2f

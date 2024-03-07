@@ -92,6 +92,7 @@ enum dw_hdmi_devtype {
 	RK3366_HDMI,
 	RK3368_HDMI,
 	RK3399_HDMI,
+	RK3528_HDMI,
 	RK3568_HDMI,
 };
 
@@ -132,12 +133,31 @@ struct dw_hdmi_phy_config {
 	u16 vlev_ctr;   /* voltage level control */
 };
 
+struct rockchip_connector;
 struct dw_hdmi_phy_ops {
-	int (*init)(struct dw_hdmi *hdmi, void *data);
-	void (*disable)(struct dw_hdmi *hdmi, void *data);
+	int (*init)(struct rockchip_connector *conn, struct dw_hdmi *hdmi, void *data);
+	void (*disable)(struct rockchip_connector *conn, struct dw_hdmi *hdmi, void *data);
 	enum drm_connector_status (*read_hpd)(struct dw_hdmi *hdmi,
 					      void *data);
-	void (*mode_valid)(struct dw_hdmi *hdmi, void *data);
+	void (*mode_valid)(struct rockchip_connector *conn, struct dw_hdmi *hdmi, void *data);
+};
+
+struct dw_hdmi_qp_phy_ops {
+	int (*init)(struct rockchip_connector *conn, void *hdmi, void *data);
+	void (*disable)(struct rockchip_connector *conn, void *hdmi, void *data);
+	enum drm_connector_status (*read_hpd)(void *data);
+	void (*mode_valid)(void *hdmi, void *data);
+	void (*set_pll)(struct rockchip_connector *conn, void *hdmi, void *data);
+};
+
+struct dw_hdmi_link_config {
+	bool dsc_mode;
+	bool frl_mode;
+	int frl_lanes;
+	int rate_per_lane;
+	int hcactive;
+	bool allm_en;
+	u8 pps_payload[128];
 };
 
 struct dw_hdmi_plat_data {
@@ -148,15 +168,17 @@ struct dw_hdmi_plat_data {
 	u32 grf_vop_sel_reg;
 	/* Vendor PHY support */
 	const struct dw_hdmi_phy_ops *phy_ops;
+	const struct dw_hdmi_qp_phy_ops *qp_phy_ops;
 	const struct dw_hdmi_audio_tmds_n *tmds_n_table;
 	const char *phy_name;
 	void *phy_data;
+	void *hdmi;
 
 	/* Synopsys PHY support */
 	const struct dw_hdmi_mpll_config *mpll_cfg;
 	const struct dw_hdmi_mpll_config *mpll_cfg_420;
 	const struct dw_hdmi_curr_ctrl *cur_ctr;
-	const struct dw_hdmi_phy_config *phy_config;
+	struct dw_hdmi_phy_config *phy_config;
 	int (*configure_phy)(struct dw_hdmi *hdmi,
 			     const struct dw_hdmi_plat_data *pdata,
 			     unsigned long mpixelclock);

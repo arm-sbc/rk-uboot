@@ -4,6 +4,7 @@
  * SPDX-License-Identifier:     GPL-2.0+
  */
 #include <common.h>
+#include <ramdisk.h>
 #include <asm/io.h>
 #include <asm/arch/boot_mode.h>
 #include <asm/arch/hardware.h>
@@ -62,6 +63,9 @@ DECLARE_GLOBAL_DATA_PTR;
 #define PMU_PWR_DWN_ST		(0x108)
 #define PMU_PWR_GATE_SFTCON	(0x110)
 
+#define PMU_BUS_IDLE_NPU	BIT(18)
+#define PMU_BUS_IDLE_VEPU	BIT(9)
+
 #define CRU_BASE		0xFF490000
 #define CRU_CLKSEL_CON02	0x108
 #define CRU_CLKSEL_CON03	0x10c
@@ -80,12 +84,14 @@ DECLARE_GLOBAL_DATA_PTR;
 #define CRU_CLKSEL_CON68	0x210
 #define CRU_CLKSEL_CON69	0x214
 #define CRU_SOFTRST_CON02	0x308
+#define CRU_SOFTRST_CON10	0x328
 
 #define CRU_PMU_BASE		0xFF480000
 #define CRU_PMU_GPLL_CON0	0x10
 #define CRU_PMU_GPLL_CON1	0x14
 
 #define GRF_BASE		0xFE000000
+#define GRF_SOC_CON2		0x008
 #define PMUGRF_BASE		0xFE020000
 #define SGRF_BASE		0xFE0A0000
 #define SGRF_CON_SCR1_BOOT_ADDR	0x0b0
@@ -434,7 +440,7 @@ void board_debug_uart_init(void)
 #if defined(CONFIG_ROCKCHIP_UART_MUX_SEL_M) && \
     (CONFIG_ROCKCHIP_UART_MUX_SEL_M == 0)
 	/* UART3 m0*/
-	rk_clrsetreg(&grf->iofunc_con[2], UART3_IO_SEL_MASK,
+	rk_clrsetreg(&grf->iofunc_con2, UART3_IO_SEL_MASK,
 		     UART3_IO_SEL_M0 << UART3_IO_SEL_SHIFT);
 
 	/* Switch iomux */
@@ -445,7 +451,7 @@ void board_debug_uart_init(void)
 #elif defined(CONFIG_ROCKCHIP_UART_MUX_SEL_M) && \
       (CONFIG_ROCKCHIP_UART_MUX_SEL_M == 1)
 	/* UART3 m1*/
-	rk_clrsetreg(&grf->iofunc_con[2], UART3_IO_SEL_MASK,
+	rk_clrsetreg(&grf->iofunc_con2, UART3_IO_SEL_MASK,
 		     UART3_IO_SEL_M1 << UART3_IO_SEL_SHIFT);
 
 	/* Switch iomux */
@@ -455,7 +461,7 @@ void board_debug_uart_init(void)
 		     GPIO1A6_UART3_RX_M1 << GPIO1A6_SHIFT);
 #else
 	/* UART3 m2*/
-	rk_clrsetreg(&grf->iofunc_con[2], UART3_IO_SEL_MASK,
+	rk_clrsetreg(&grf->iofunc_con2, UART3_IO_SEL_MASK,
 		     UART3_IO_SEL_M2 << UART3_IO_SEL_SHIFT);
 
 	/* Switch iomux */
@@ -470,7 +476,7 @@ void board_debug_uart_init(void)
 #if defined(CONFIG_ROCKCHIP_UART_MUX_SEL_M) && \
     (CONFIG_ROCKCHIP_UART_MUX_SEL_M == 0)
 	/* UART4 m0*/
-	rk_clrsetreg(&grf->iofunc_con[2], UART4_IO_SEL_MASK,
+	rk_clrsetreg(&grf->iofunc_con2, UART4_IO_SEL_MASK,
 		     UART4_IO_SEL_M0 << UART4_IO_SEL_SHIFT);
 
 	/* Switch iomux */
@@ -481,7 +487,7 @@ void board_debug_uart_init(void)
 #elif defined(CONFIG_ROCKCHIP_UART_MUX_SEL_M) && \
       (CONFIG_ROCKCHIP_UART_MUX_SEL_M == 1)
 	/* UART4 m1*/
-	rk_clrsetreg(&grf->iofunc_con[2], UART4_IO_SEL_MASK,
+	rk_clrsetreg(&grf->iofunc_con2, UART4_IO_SEL_MASK,
 		     UART4_IO_SEL_M1 << UART4_IO_SEL_SHIFT);
 
 	/* Switch iomux */
@@ -491,7 +497,7 @@ void board_debug_uart_init(void)
 		     GPIO2A6_UART4_TX_M1 << GPIO2A6_SHIFT);
 #else
 	/* UART4 m2*/
-	rk_clrsetreg(&grf->iofunc_con[2], UART4_IO_SEL_MASK,
+	rk_clrsetreg(&grf->iofunc_con2, UART4_IO_SEL_MASK,
 		     UART4_IO_SEL_M2 << UART4_IO_SEL_SHIFT);
 
 	/* Switch iomux */
@@ -506,7 +512,7 @@ void board_debug_uart_init(void)
 #if defined(CONFIG_ROCKCHIP_UART_MUX_SEL_M) && \
     (CONFIG_ROCKCHIP_UART_MUX_SEL_M == 0)
 	/* UART5 m0*/
-	rk_clrsetreg(&grf->iofunc_con[2], UART5_IO_SEL_MASK,
+	rk_clrsetreg(&grf->iofunc_con2, UART5_IO_SEL_MASK,
 		     UART5_IO_SEL_M0 << UART5_IO_SEL_SHIFT);
 
 	/* Switch iomux */
@@ -517,7 +523,7 @@ void board_debug_uart_init(void)
 #elif defined(CONFIG_ROCKCHIP_UART_MUX_SEL_M) && \
       (CONFIG_ROCKCHIP_UART_MUX_SEL_M == 1)
 	/* UART5 m1*/
-	rk_clrsetreg(&grf->iofunc_con[2], UART5_IO_SEL_MASK,
+	rk_clrsetreg(&grf->iofunc_con2, UART5_IO_SEL_MASK,
 		     UART5_IO_SEL_M1 << UART5_IO_SEL_SHIFT);
 
 	/* Switch iomux */
@@ -527,7 +533,7 @@ void board_debug_uart_init(void)
 		     GPIO2B0_UART5_TX_M1 << GPIO2B0_SHIFT);
 #else
 	/* UART5 m2*/
-	rk_clrsetreg(&grf->iofunc_con[2], UART5_IO_SEL_MASK,
+	rk_clrsetreg(&grf->iofunc_con2, UART5_IO_SEL_MASK,
 		     UART5_IO_SEL_M2 << UART5_IO_SEL_SHIFT);
 
 	/* Switch iomux */
@@ -546,7 +552,19 @@ int arch_cpu_init(void)
 	 * CONFIG_DM_RAMDISK: for ramboot that without SPL.
 	 */
 #if defined(CONFIG_SPL_BUILD) || defined(CONFIG_DM_RAMDISK)
+	u32 pd_st, idle_st;
 	int delay;
+
+	/*
+	 * Don't rely on CONFIG_DM_RAMDISK since it can be a default
+	 * configuration after disk/part_rkram.c was introduced.
+	 *
+	 * This is compatible code.
+	 */
+  #ifndef CONFIG_SPL_BUILD
+	if (!dm_ramdisk_is_enabled())
+		return 0;
+  #endif
 
 	/* write BOOT_WATCHDOG to boot mode register, if reset by wdt */
 	if (readl(PMUGRF_RSTFUNC_STATUS) & WDT_RESET_SRC) {
@@ -611,11 +629,7 @@ int arch_cpu_init(void)
 	do {
 		udelay(1);
 		delay--;
-		if (delay == 0) {
-			printf("Fail to set domain.");
-			hang();
-		}
-	} while (readl(PMU_BASE_ADDR + PMU_PWR_DWN_ST));
+	} while (delay && readl(PMU_BASE_ADDR + PMU_PWR_DWN_ST));
 
 	/* release all idle request */
 	writel(0xffff0000, PMU_BASE_ADDR + PMU_BUS_IDLE_SFTCON(0));
@@ -626,22 +640,30 @@ int arch_cpu_init(void)
 	do {
 		udelay(1);
 		delay--;
-		if (delay == 0) {
-			printf("Fail to get ack on domain.\n");
-			hang();
-		}
-	} while (readl(PMU_BASE_ADDR + PMU_BUS_IDLE_ACK));
+	} while (delay && readl(PMU_BASE_ADDR + PMU_BUS_IDLE_ACK));
 
 	delay = 1000;
 	/* wait idle status */
 	do {
 		udelay(1);
 		delay--;
-		if (delay == 0) {
-			printf("Fail to set idle on domain.\n");
-			hang();
-		}
-	} while (readl(PMU_BASE_ADDR + PMU_BUS_IDLE_ST));
+	} while (delay && readl(PMU_BASE_ADDR + PMU_BUS_IDLE_ST));
+
+	pd_st = readl(PMU_BASE_ADDR + PMU_PWR_DWN_ST);
+	idle_st = readl(PMU_BASE_ADDR + PMU_BUS_IDLE_ST);
+
+	if (pd_st || idle_st) {
+		printf("PMU_PWR_DOWN_ST: 0x%08x\n", pd_st);
+		printf("PMU_BUS_IDLE_ST: 0x%08x\n", idle_st);
+
+		if (idle_st & PMU_BUS_IDLE_NPU)
+			printf("Failed to enable PD_NPU, please check VDD_NPU is supplied\n");
+
+		if (idle_st & PMU_BUS_IDLE_VEPU)
+			printf("Failed to enable PD_VEPU, please check VDD_VEPU is supplied\n");
+
+		hang();
+	}
 
 	writel(0x303, USB_HOST_PRIORITY_REG);
 	writel(0x303, USB_OTG_PRIORITY_REG);
@@ -718,17 +740,27 @@ int arch_cpu_init(void)
   #endif
 
 #endif
-
+#if defined(CONFIG_ROCKCHIP_SFC)
 	/* GPIO0_D6 pull down in default, pull up it for SPI Flash */
 	writel(((0x3 << 12) << 16) | (0x1 << 12), GRF1_GPIO0D_P);
+#endif
+	/* reset sdmmc0 to prevent power leak */
+	writel(0x00100010, CRU_BASE + CRU_SOFTRST_CON10);
+	udelay(1);
+	writel(0x00100000, CRU_BASE + CRU_SOFTRST_CON10);
 
 	return 0;
 }
 #endif
 
 #ifdef CONFIG_SPL_BUILD
-int spl_fit_standalone_release(uintptr_t entry_point)
+int spl_fit_standalone_release(char *id, uintptr_t entry_point)
 {
+	/*
+	 * Fix mcu does not work probabilistically through reset the
+	 * mcu debug module. If use the jtag debug, reset it.
+	 */
+	writel(0x80008000, GRF_BASE + GRF_SOC_CON2);
 	/* Reset the scr1 */
 	writel(0x04000400, CRU_BASE + CRU_SOFTRST_CON02);
 	udelay(100);

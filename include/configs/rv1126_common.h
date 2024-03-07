@@ -12,17 +12,16 @@
 #define COUNTER_FREQUENCY		24000000
 #define CONFIG_SYS_MALLOC_LEN		(32 << 20)
 #define CONFIG_SYS_CBSIZE		1024
-#define CONFIG_SKIP_LOWLEVEL_INIT
 #define CONFIG_SYS_NS16550_MEM32
 
 #ifdef CONFIG_SUPPORT_USBPLUG
 #define CONFIG_SYS_TEXT_BASE		0x00000000
 #else
-#define CONFIG_SYS_TEXT_BASE		0x00400000
+#define CONFIG_SYS_TEXT_BASE		0x00600000
 #endif
 
-#define CONFIG_SYS_INIT_SP_ADDR		0x00600000
-#define CONFIG_SYS_LOAD_ADDR		0x00C00800
+#define CONFIG_SYS_INIT_SP_ADDR		0x00800000
+#define CONFIG_SYS_LOAD_ADDR		0x00e00800
 #define CONFIG_SYS_BOOTM_LEN		(64 << 20)
 
 /* SPL */
@@ -69,6 +68,15 @@
 #define CONFIG_USB_FUNCTION_MASS_STORAGE
 #define CONFIG_ROCKUSB_G_DNL_PID	0x110b
 
+/* memory size <= 128MB,  TEE: 0x3000000 - 0x3200000 */
+#define ENV_MEM_LAYOUT_SETTINGS1	\
+	"scriptaddr1=0x00000000\0"	\
+	"pxefile_addr1_r=0x00100000\0"	\
+	"fdt_addr1_r=0x02f00000\0"	\
+	"kernel_addr1_r=0x02008000\0"	\
+	"ramdisk_addr1_r=0x03200000\0"
+
+/* memory size > 128MB */
 #define ENV_MEM_LAYOUT_SETTINGS		\
 	"scriptaddr=0x00000000\0"	\
 	"pxefile_addr_r=0x00100000\0"	\
@@ -79,6 +87,7 @@
 #include <config_distro_bootcmd.h>
 #define CONFIG_EXTRA_ENV_SETTINGS	\
 	ENV_MEM_LAYOUT_SETTINGS		\
+	ENV_MEM_LAYOUT_SETTINGS1	\
 	"partitions=" PARTS_DEFAULT	\
 	ROCKCHIP_DEVICE_SETTINGS	\
 	RKIMG_DET_BOOTDEV		\
@@ -96,6 +105,7 @@
 #endif
 #endif
 
+#define CONFIG_LIB_HW_RAND
 #define CONFIG_PREBOOT
 
 #endif

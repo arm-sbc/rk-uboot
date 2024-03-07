@@ -12,6 +12,13 @@
 #define RKCLK_PLL_MODE_NORMAL		1
 #define RKCLK_PLL_MODE_DEEP		2
 
+/*
+ * PLL flags
+ */
+#define ROCKCHIP_PLL_SYNC_RATE		BIT(0)
+/* normal mode only. now only for pll_rk3036, pll_rk3328 type */
+#define ROCKCHIP_PLL_FIXED_MODE		BIT(1)
+
 enum {
 	ROCKCHIP_SYSCON_NOC,
 	ROCKCHIP_SYSCON_GRF,
@@ -22,6 +29,14 @@ enum {
 	ROCKCHIP_SYSCON_CIC,
 	ROCKCHIP_SYSCON_MSCH,
 	ROCKCHIP_SYSCON_USBGRF,
+	ROCKCHIP_SYSCON_PCIE30_PHY_GRF,
+	ROCKCHIP_SYSCON_PHP_GRF,
+	ROCKCHIP_SYSCON_PIPE_PHY0_GRF,
+	ROCKCHIP_SYSCON_PIPE_PHY1_GRF,
+	ROCKCHIP_SYSCON_PIPE_PHY2_GRF,
+	ROCKCHIP_SYSCON_VOP_GRF,
+	ROCKCHIP_SYSCON_VO_GRF,
+	ROCKCHIP_SYSCON_IOC,
 };
 
 /* Standard Rockchip clock numbers */
@@ -61,6 +76,15 @@ enum rk_clk_id {
 	.frac = _frac,						\
 }
 
+#define RK3588_PLL_RATE(_rate, _p, _m, _s, _k)			\
+{								\
+	.rate	= _rate##U,					\
+	.p = _p,						\
+	.m = _m,						\
+	.s = _s,						\
+	.k = _k,						\
+}
+
 struct rockchip_pll_rate_table {
 	unsigned long rate;
 	unsigned int nr;
@@ -74,6 +98,11 @@ struct rockchip_pll_rate_table {
 	unsigned int postdiv2;
 	unsigned int dsmpd;
 	unsigned int frac;
+	/* for RK3588 */
+	unsigned int m;
+	unsigned int p;
+	unsigned int s;
+	unsigned int k;
 };
 
 enum rockchip_pll_type {
@@ -82,6 +111,7 @@ enum rockchip_pll_type {
 	pll_rk3328,
 	pll_rk3366,
 	pll_rk3399,
+	pll_rk3588,
 };
 
 struct rockchip_pll_clock {
@@ -102,6 +132,28 @@ struct rockchip_cpu_rate_table {
 	unsigned int pclk_div;
 };
 
+#ifdef CONFIG_ROCKCHIP_IMAGE_TINY
+static inline ulong rockchip_pll_get_rate(struct rockchip_pll_clock *pll,
+					  void __iomem *base,
+					  ulong pll_id)
+{
+	return 0;
+}
+
+static inline int rockchip_pll_set_rate(struct rockchip_pll_clock *pll,
+					void __iomem *base, ulong pll_id,
+					ulong drate)
+{
+	return 0;
+}
+
+static inline const struct rockchip_cpu_rate_table *
+rockchip_get_cpu_settings(struct rockchip_cpu_rate_table *cpu_table,
+			  ulong rate)
+{
+	return NULL;
+}
+#else
 int rockchip_pll_set_rate(struct rockchip_pll_clock *pll,
 			  void __iomem *base, ulong clk_id,
 			  ulong drate);
@@ -110,6 +162,7 @@ ulong rockchip_pll_get_rate(struct rockchip_pll_clock *pll,
 const struct rockchip_cpu_rate_table *
 rockchip_get_cpu_settings(struct rockchip_cpu_rate_table *cpu_table,
 			  ulong rate);
+#endif
 
 static inline int rk_pll_id(enum rk_clk_id clk_id)
 {

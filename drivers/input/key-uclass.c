@@ -6,10 +6,12 @@
 
 #include <common.h>
 #include <adc.h>
+#include <div64.h>
 #include <dm.h>
+#include <irq-generic.h>
 #include <key.h>
 #include <dm/lists.h>
-#include <irq-generic.h>
+#include <dm/uclass-internal.h>
 
 #define KEY_WARN(fmt, args...)	printf("Key Warn: "fmt, ##args)
 #define KEY_ERR(fmt, args...)	printf("Key Error: "fmt, ##args)
@@ -36,11 +38,42 @@ uint64_t key_timer(uint64_t base)
 	return (cntpct > base) ? (cntpct - base) : 0;
 }
 
-static int key_adc_event(struct dm_key_uclass_platdata *uc_key, int adcval)
+#ifdef CONFIG_ADC
+static int adc_raw_to_mV(struct udevice *dev, unsigned int raw, int *mV)
 {
-	return (adcval <= uc_key->max && adcval >= uc_key->min) ?
+	unsigned int data_mask;
+	int ret, vref = 1800000;
+	u64 raw64 = raw;
+
+	ret = adc_data_mask(dev, &data_mask);
+	if (ret)
+		return ret;
+
+	raw64 *= vref;
+	do_div(raw64, data_mask);
+	*mV = raw64;
+
+	return 0;
+}
+
+static int key_adc_event(struct udevice *dev,
+			 struct dm_key_uclass_platdata *uc_key, int adcval)
+{
+	int val = adcval;
+
+	if (uc_key->in_volt) {
+		if (adc_raw_to_mV(dev, adcval, &val))
+			return KEY_PRESS_NONE;
+	}
+
+	debug("[%s] <%d, %d, %d>: adcval=%d -> mV=%d\n",
+	      uc_key->name, uc_key->min, uc_key->center, uc_key->max,
+	      adcval, val);
+
+	return (val <= uc_key->max && val >= uc_key->min) ?
 		KEY_PRESS_DOWN : KEY_PRESS_NONE;
 }
+#endif
 
 static int key_gpio_event(struct dm_key_uclass_platdata *uc_key)
 {
@@ -107,16 +140,34 @@ int key_is_pressed(int event)
 
 static int key_core_read(struct dm_key_uclass_platdata *uc_key)
 {
-	unsigned int adcval;
-
 	if (uc_key->type == ADC_KEY) {
-		if (adc_channel_single_shot("saradc",
-					    uc_key->channel, &adcval)) {
-			KEY_ERR("%s failed to read saradc\n", uc_key->name);
+#ifdef CONFIG_ADC
+		struct udevice *dev;
+		unsigned int adcval;
+		int ret;
+
+		ret = uclass_get_device_by_name(UCLASS_ADC, "saradc", &dev);
+		if (ret) {
+			KEY_ERR("%s: No saradc\n", uc_key->name);
 			return KEY_NOT_EXIST;
 		}
 
-		return key_adc_event(uc_key, adcval);
+		ret = adc_start_channel(dev, uc_key->channel);
+		if (ret) {
+			KEY_ERR("%s: Failed to start saradc\n", uc_key->name);
+			return KEY_NOT_EXIST;
+		}
+
+		ret = adc_channel_data(dev, uc_key->channel, &adcval);
+		if (ret) {
+			KEY_ERR("%s: Failed to read saradc, %d\n", uc_key->name, ret);
+			return KEY_NOT_EXIST;
+		}
+
+		return key_adc_event(dev, uc_key, adcval);
+#else
+		return KEY_NOT_EXIST;
+#endif
 	}
 
 	return (uc_key->code == KEY_POWER) ?
@@ -162,7 +213,24 @@ try_again:
 	return event;
 }
 
-#if defined(CONFIG_IRQ) && !defined(CONFIG_SPL_BUILD)
+int key_exist(int code)
+{
+	struct dm_key_uclass_platdata *uc_key;
+	struct udevice *dev;
+
+	for (uclass_find_first_device(UCLASS_KEY, &dev);
+	     dev;
+	     uclass_find_next_device(&dev)) {
+		uc_key = dev_get_uclass_platdata(dev);
+
+		if (uc_key->code == code)
+			return 1;
+	}
+
+	return 0;
+}
+
+#if CONFIG_IS_ENABLED(IRQ)
 #if defined(CONFIG_PWRKEY_DNL_TRIGGER_NUM) && \
 		(CONFIG_PWRKEY_DNL_TRIGGER_NUM > 0)
 static void power_key_download(struct dm_key_uclass_platdata *uc_key)
@@ -176,8 +244,7 @@ static void power_key_download(struct dm_key_uclass_platdata *uc_key)
 		if (uc_key->trig_cnt >= trig_cnt) {
 			printf("\nEnter download mode by pwrkey\n");
 			irq_handler_disable(uc_key->irq);
-			run_command("rockusb 0 $devtype $devnum", 0);
-			run_command("rbrom", 0);
+			run_command("download", 0);
 		}
 	}
 }
@@ -255,7 +322,6 @@ int key_bind_children(struct udevice *dev, const char *drv_name)
 static int key_post_probe(struct udevice *dev)
 {
 	struct dm_key_uclass_platdata *uc_key;
-	int margin = 30;
 	int ret;
 
 	uc_key = dev_get_uclass_platdata(dev);
@@ -266,13 +332,9 @@ static int key_post_probe(struct udevice *dev)
 	uc_key->pre_reloc = dev_read_bool(dev, "u-boot,dm-pre-reloc") ||
 			    dev_read_bool(dev, "u-boot,dm-spl");
 
-	if (uc_key->type == ADC_KEY) {
-		uc_key->max = uc_key->adcval + margin;
-		uc_key->min = uc_key->adcval > margin ?
-					uc_key->adcval - margin : 0;
-	} else {
+	if (uc_key->type != ADC_KEY) {
 		if (uc_key->code == KEY_POWER) {
-#if defined(CONFIG_IRQ) && !defined(CONFIG_SPL_BUILD)
+#if CONFIG_IS_ENABLED(IRQ)
 			int irq;
 
 			if (uc_key->skip_irq_init)
@@ -317,8 +379,9 @@ static int key_post_probe(struct udevice *dev)
 	       dev->parent->name);
 
 	if (uc_key->type == ADC_KEY) {
-		printf("    adcval: %d (%d, %d)\n", uc_key->adcval,
-		       uc_key->min, uc_key->max);
+		printf("      %s: %d (%d, %d)\n",
+		       uc_key->in_volt ? "volt" : " adc",
+		       uc_key->center, uc_key->min, uc_key->max);
 		printf("   channel: %d\n\n", uc_key->channel);
 	} else {
 		const char *gpio_name =

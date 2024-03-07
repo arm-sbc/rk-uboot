@@ -130,14 +130,16 @@ static int rockchip_gpio_probe(struct udevice *dev)
 	struct rockchip_pinctrl_priv *pctrl_priv;
 	struct rockchip_pin_bank *bank;
 	char *end = NULL;
-	static int gpio;
 	int id = -1, ret;
 
 	priv->regs = dev_read_addr_ptr(dev);
-	ret = uclass_first_device_err(UCLASS_PINCTRL, &priv->pinctrl);
+	ret = uclass_get_device_by_seq(UCLASS_PINCTRL, 0, &priv->pinctrl);
 	if (ret) {
-		dev_err(dev, "failed to get pinctrl device %d\n", ret);
-		return ret;
+		ret = uclass_first_device_err(UCLASS_PINCTRL, &priv->pinctrl);
+		if (ret) {
+			dev_err(dev, "failed to get pinctrl device %d\n", ret);
+			return ret;
+		}
 	}
 
 	pctrl_priv = dev_get_priv(priv->pinctrl);
@@ -149,14 +151,12 @@ static int rockchip_gpio_probe(struct udevice *dev)
 	end = strrchr(dev->name, '@');
 	if (end)
 		id = trailing_strtoln(dev->name, end);
-	else
+	if (id < 0)
 		dev_read_alias_seq(dev, &id);
 
-	if (id < 0)
-		id = gpio++;
-
-	if (id >= pctrl_priv->ctrl->nr_banks) {
-		dev_err(dev, "bank id invalid\n");
+	if (id < 0 || id >= pctrl_priv->ctrl->nr_banks) {
+		dev_err(dev, "nr_banks=%d, bank id=%d invalid\n",
+			pctrl_priv->ctrl->nr_banks, id);
 		return -EINVAL;
 	}
 
