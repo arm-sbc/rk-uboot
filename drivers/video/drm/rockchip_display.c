@@ -17,6 +17,7 @@
 #include <linux/compat.h>
 #include <linux/media-bus-format.h>
 #include <malloc.h>
+#include <memalign.h>
 #include <video.h>
 #include <video_rockchip.h>
 #include <video_bridge.h>
@@ -139,8 +140,8 @@ int rockchip_get_baseparameter(void)
 {
 	struct blk_desc *dev_desc;
 	disk_partition_t part_info;
-	int block_num = 2048;
-	char baseparameter_buf[block_num * RK_BLK_SIZE] __aligned(ARCH_DMA_MINALIGN);
+	int block_num;
+	char *baseparameter_buf;
 	int ret = 0;
 
 	dev_desc = rockchip_get_bootdev();
@@ -154,10 +155,17 @@ int rockchip_get_baseparameter(void)
 		return -ENOENT;
 	}
 
+	block_num = BLOCK_CNT(sizeof(base_parameter), dev_desc);
+	baseparameter_buf = memalign(ARCH_DMA_MINALIGN, block_num * dev_desc->blksz);
+	if (!baseparameter_buf) {
+		printf("failed to alloc memory for baseparameter buffer\n");
+		return -ENOMEM;
+	}
+
 	ret = blk_dread(dev_desc, part_info.start, block_num, (void *)baseparameter_buf);
 	if (ret < 0) {
 		printf("read baseparameter failed\n");
-		return ret;
+		goto out;
 	}
 
 	memcpy(&base_parameter, baseparameter_buf, sizeof(base_parameter));
@@ -167,6 +175,8 @@ int rockchip_get_baseparameter(void)
 	}
 	rockchip_display_make_crc32_table();
 
+out:
+	free(baseparameter_buf);
 	return ret;
 }
 
@@ -416,7 +426,7 @@ int rockchip_ofnode_get_display_mode(ofnode node, struct drm_display_mode *mode,
 	FDT_GET_BOOL(val, "doublescan");
 	flags |= val ? DRM_MODE_FLAG_DBLSCAN : 0;
 	FDT_GET_BOOL(val, "doubleclk");
-	flags |= val ? DISPLAY_FLAGS_DOUBLECLK : 0;
+	flags |= val ? DRM_MODE_FLAG_DBLCLK : 0;
 
 	FDT_GET_INT(val, "de-active");
 	*bus_flags |= val ? DRM_BUS_FLAG_DE_HIGH : DRM_BUS_FLAG_DE_LOW;
@@ -516,23 +526,6 @@ static int display_get_timing_from_dts(struct rockchip_panel *panel,
 	}
 
 	rockchip_ofnode_get_display_mode(timing, mode, bus_flags);
-
-	if (IS_ENABLED(CONFIG_ROCKCHIP_RK3568) || IS_ENABLED(CONFIG_ROCKCHIP_RK3588)) {
-		if (mode->hdisplay % 4) {
-			int old_hdisplay = mode->hdisplay;
-			int align = 4 - (mode->hdisplay % 4);
-
-			mode->hdisplay += align;
-			mode->hsync_start += align;
-			mode->hsync_end += align;
-			mode->htotal += align;
-
-			ofnode_write_u32_array(timing, "hactive", (u32 *)&mode->hdisplay, 1);
-
-			printf("WARN: hactive need to be aligned with 4-pixel, %d -> %d\n",
-				old_hdisplay, mode->hdisplay);
-		}
-	}
 
 	return 0;
 }
@@ -780,7 +773,7 @@ static int display_init(struct display_state *state)
 					     conn_state->edid, EDID_SIZE);
 		if (ret > 0) {
 #if defined(CONFIG_I2C_EDID)
-			display_get_edid_mode(state);
+			ret = display_get_edid_mode(state);
 #endif
 		} else {
 			ret = video_bridge_get_timing(conn->bridge->dev);
@@ -821,10 +814,16 @@ static int display_init(struct display_state *state)
 
 	/* rk356x series drive mipi pixdata on posedge */
 	compatible = dev_read_string(conn->dev, "compatible");
-	if (!strcmp(compatible, "rockchip,rk3568-mipi-dsi")) {
+	if (compatible && !strcmp(compatible, "rockchip,rk3568-mipi-dsi")) {
 		conn_state->bus_flags &= ~DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE;
 		conn_state->bus_flags |= DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE;
 	}
+
+	if (display_mode_fixup(state))
+		goto deinit;
+
+	if (conn->bridge)
+		rockchip_bridge_mode_set(conn->bridge, &conn_state->mode);
 
 	printf("%s: %s detailed mode clock %u kHz, flags[%x]\n"
 	       "    H: %04d %04d %04d %04d\n"
@@ -838,12 +837,6 @@ static int display_init(struct display_state *state)
 	       mode->vdisplay, mode->vsync_start,
 	       mode->vsync_end, mode->vtotal,
 	       conn_state->bus_format);
-
-	if (display_mode_fixup(state))
-		goto deinit;
-
-	if (conn->bridge)
-		rockchip_bridge_mode_set(conn->bridge, &conn_state->mode);
 
 	if (crtc_funcs->init && state->enabled_at_spl == false) {
 		ret = crtc_funcs->init(state);
@@ -924,6 +917,23 @@ static int display_enable(struct display_state *state)
 
 	if (state->enabled_at_spl == false)
 		rockchip_connector_enable(state);
+
+#ifdef CONFIG_DRM_ROCKCHIP_RK628
+	/*
+	 * trigger .probe helper of U_BOOT_DRIVER(rk628) in ./rk628/rk628.c
+	 */
+	struct udevice * dev;
+	int phandle, ret;
+
+	phandle = ofnode_read_u32_default(state->node, "bridge", -1);
+	if (phandle < 0)
+		printf("%s failed to find bridge phandle\n", ofnode_get_name(state->node));
+
+	ret = uclass_get_device_by_phandle_id(UCLASS_I2C_GENERIC, phandle, &dev);
+	if (ret && ret != -ENOENT)
+		printf("%s:%d failed to get rk628 device ret:%d\n", __func__, __LINE__, ret);
+
+#endif
 
 	if (crtc_state->soft_te)
 		crtc_funcs->apply_soft_te(state);
@@ -1452,8 +1462,10 @@ static int load_bmp_logo(struct logo_info *logo, const char *bmp_name)
 	}
 
 	bmp_data = malloc(MAX_IMAGE_BYTES);
-	if (!bmp_data)
+	if (!bmp_data) {
+		printf("failed to alloc bmp data\n");
 		return -ENOMEM;
+	}
 
 	bmp_create(&bmp, &bitmap_callbacks);
 
@@ -1470,6 +1482,14 @@ static int load_bmp_logo(struct logo_info *logo, const char *bmp_name)
 		ret = -EINVAL;
 		goto free_bmp_data;
 	}
+
+	if (bmp.buffer_size > MAX_IMAGE_BYTES) {
+		printf("bmp[%s] data size[%dKB] is over the limitation MAX_IMAGE_BYTES[%dKB]\n",
+			bmp_name, bmp.buffer_size / 1024, MAX_IMAGE_BYTES / 1024);
+		ret = -EINVAL;
+		goto free_bmp_data;
+	}
+
 	/* fix bpp to 32 */
 	logo->bpp = 32;
 	logo->offset = 0;
@@ -1483,13 +1503,6 @@ static int load_bmp_logo(struct logo_info *logo, const char *bmp_name)
 		/* allow partially decoded images */
 		if (code != BMP_INSUFFICIENT_DATA && code != BMP_DATA_ERROR) {
 			printf("failed to allocate the buffer of bmp:%s\n", bmp_name);
-			ret = -EINVAL;
-			goto free_bmp_data;
-		}
-
-		/* skip if the partially decoded image would be ridiculously large */
-		if ((bmp.width * bmp.height) > 200000) {
-			printf("partially decoded bmp:%s can not be too large\n", bmp_name);
 			ret = -EINVAL;
 			goto free_bmp_data;
 		}
@@ -1890,12 +1903,11 @@ static struct rockchip_connector *rockchip_get_split_connector(struct rockchip_c
 	struct device_node *split_node;
 	struct udevice *split_dev;
 	struct rockchip_connector *split_conn;
-	bool split_mode;
 	int ret;
 
-	split_mode = ofnode_read_bool(conn->dev->node, "split-mode");
-	split_mode |= ofnode_read_bool(conn->dev->node, "dual-channel");
-	if (!split_mode)
+	conn->split_mode = ofnode_read_bool(conn->dev->node, "split-mode");
+	conn->dual_channel_mode = ofnode_read_bool(conn->dev->node, "dual-channel");
+	if (!conn->split_mode && !conn->dual_channel_mode)
 		return NULL;
 
 	switch (conn->type) {
@@ -1931,6 +1943,8 @@ static struct rockchip_connector *rockchip_get_split_connector(struct rockchip_c
 		debug("Warn: no find panel or bridge\n");
 
 	split_conn->phy = rockchip_of_find_phy(split_dev);
+	split_conn->split_mode = conn->split_mode;
+	split_conn->dual_channel_mode = conn->dual_channel_mode;
 
 	return split_conn;
 }
@@ -2164,6 +2178,7 @@ static int rockchip_display_probe(struct udevice *dev)
 		s->conn_state.overscan.top_margin = 100;
 		s->conn_state.overscan.bottom_margin = 100;
 		s->crtc_state.node = np_to_ofnode(vop_node);
+		s->crtc_state.port_node = port_node;
 		s->crtc_state.dev = crtc_dev;
 		s->crtc_state.crtc = crtc;
 		s->crtc_state.crtc_id = get_crtc_id(np_to_ofnode(ep_node), is_ports_node);
@@ -2322,12 +2337,6 @@ void rockchip_display_fixup(void *blob)
 		if (!conn_funcs) {
 			printf("failed to get exist connector\n");
 			continue;
-		}
-
-		if (s->conn_state.secondary &&
-		    s->conn_state.secondary->type != DRM_MODE_CONNECTOR_LVDS) {
-			s->conn_state.mode.clock *= 2;
-			s->conn_state.mode.hdisplay *= 2;
 		}
 
 		crtc = s->crtc_state.crtc;

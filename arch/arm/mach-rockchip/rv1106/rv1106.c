@@ -112,6 +112,12 @@ DECLARE_GLOBAL_DATA_PTR;
 #define USBPHY_APB_BASE			0xff3e0000
 #define USBPHY_FSLS_DIFF_RECEIVER	0x0100
 
+#define CSI_PHY_BASE			0xff3e8000
+#define CSI_DPHY_LANE_EN		0x0
+#define CSI_DPHY_DUAL_CLK_ENABLE	0x80
+#define CSI_DPHY_PATH0_MODE		0x44c
+#define CSI_DPHY_PATH1_MODE		0x84c
+
 #define GPIO0_IOC_BASE			0xFF388000
 #define GPIO1_IOC_BASE			0xFF538000
 #define GPIO2_IOC_BASE			0xFF548000
@@ -126,6 +132,7 @@ DECLARE_GLOBAL_DATA_PTR;
 #define GPIO4B_IOMUX_SEL_L		0x008
 
 #define GPIO4_IOC_GPIO4B_DS0		0x0030
+#define GPIO4_IOC_SARADC_IO_CON		0x00c0
 
 #define VICRU_BASE			0XFF3B4000
 #define VICRU_VISOFTRST_CON01		0xA04
@@ -470,7 +477,13 @@ int arch_cpu_init(void)
 
 	/* release the wdt */
 	writel(0x2000200, PERI_GRF_BASE + PERI_GRF_PERI_CON1);
-	writel(0x400040, CRU_BASE + CRU_GLB_RST_CON);
+
+	/*
+	 * enable tsadc trigger global reset and select first reset.
+	 * enable wdt trigger global/pmu reset and select first reset.
+	 * select first reset trigger pmu reset.
+	 */
+	writel(0x85f, CRU_BASE + CRU_GLB_RST_CON);
 
 	/*
 	 * When venc/npu use pvtpll, reboot will fail, because
@@ -519,6 +532,14 @@ int arch_cpu_init(void)
 	writel(0xffff1111, GPIO4_IOC_BASE + GPIO4A_IOMUX_SEL_H);
 	writel(0x00ff0011, GPIO4_IOC_BASE + GPIO4B_IOMUX_SEL_L);
 #endif
+
+	/* Set GPIO3_B0~GPIO3B7 and GPIO3_C0~GPIO3_C3 of MIPI CSI DPHY to default GPIO Input 1V8 Only mode */
+	writel(0x0000007d, CSI_PHY_BASE + CSI_DPHY_LANE_EN);
+	writel(0x0000005f, CSI_PHY_BASE + CSI_DPHY_DUAL_CLK_ENABLE);
+	writel(0x00000001, CSI_PHY_BASE + CSI_DPHY_PATH0_MODE);
+	writel(0x00000001, CSI_PHY_BASE + CSI_DPHY_PATH1_MODE);
+	/* Set GPIO4_C0 GPIO4C1 of SARADC to default GPIO Input 1V8 Only mode */
+	writel(0x000c000c, GPIO4_IOC_BASE + GPIO4_IOC_SARADC_IO_CON);
 
 #endif
 	/* reset sdmmc0 to prevent power leak */

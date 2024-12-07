@@ -17,12 +17,10 @@
 #include <dm.h>
 #include <misc.h>
 #include <mmc.h>
+#include <scsi.h>
 #include <stdlib.h>
 #include <usbplug.h>
-
-#ifdef CONFIG_ROCKCHIP_VENDOR_PARTITION
 #include <asm/arch/vendor.h>
-#endif
 #include <rockusb.h>
 
 #define ROCKUSB_INTERFACE_CLASS	0xff
@@ -94,7 +92,7 @@ int g_dnl_bind_fixup(struct usb_device_descriptor *dev, const char *name)
 	} else if (!strncmp(name, "usb_dnl_fastboot", 16)) {
 		/* Fix to Google's VID and PID */
 		dev->idVendor  = __constant_cpu_to_le16(0x18d1);
-		dev->idProduct = __constant_cpu_to_le16(0xd00d);
+		dev->idProduct = __constant_cpu_to_le16(0x4d00);
 	} else if (!strncmp(name, "usb_dnl_dfu", 11)) {
 		/* Fix to Rockchip's VID and PID for DFU */
 		dev->idVendor  = cpu_to_le16(0x2207);
@@ -242,6 +240,12 @@ static int rkusb_do_read_flash_id(struct fsg_common *common,
 		else
 			str = "NOR  ";
 		break;
+	case IF_TYPE_SCSI:
+		str = "SATA ";
+		break;
+	case IF_TYPE_NVME:
+		str = "PCIE ";
+		break;
 	default:
 		str = "UNKN "; /* unknown */
 		break;
@@ -286,6 +290,10 @@ static int rkusb_do_read_flash_info(struct fsg_common *common,
 		.flash_mask = 0
 	};
 
+	/* Set the raw block size for tools to creat GPT with 4K block size */
+	if (desc->rawblksz == 0x1000)
+		finfo.manufacturer = 208;
+
 	finfo.flash_size = (u32)desc->lba;
 
 	if (desc->if_type == IF_TYPE_MTD &&
@@ -296,15 +304,24 @@ static int rkusb_do_read_flash_info(struct fsg_common *common,
 		if (mtd) {
 			finfo.block_size = mtd->erasesize >> 9;
 			finfo.page_size = mtd->writesize >> 9;
+#ifdef CONFIG_SUPPORT_USBPLUG
+			/* Using 4KB pagesize as 2KB for idblock */
+			if (finfo.page_size == 8 && desc->devnum == BLK_MTD_SPI_NAND)
+				finfo.page_size |= (4 << 4);
+#endif
 		}
 	}
 
 	if (desc->if_type == IF_TYPE_MTD && desc->devnum == BLK_MTD_SPI_NOR) {
-		/* RV1126/RK3308 mtd spinor keep the former upgrade mode */
-#if !defined(CONFIG_ROCKCHIP_RV1126) && !defined(CONFIG_ROCKCHIP_RK3308)
+		/* RV1126 mtd spinor keep the former upgrade mode */
+#if !defined(CONFIG_ROCKCHIP_RV1126)
 		finfo.block_size = 0x80; /* Aligned to 64KB */
 #else
 		finfo.block_size = ROCKCHIP_FLASH_BLOCK_SIZE;
+#endif
+#if defined(CONFIG_ROCKCHIP_RK3308)
+	} else if (desc->if_type == IF_TYPE_SPINOR) {
+		finfo.block_size = 0x80; /* Aligned to 64KB */
 #endif
 	}
 
@@ -437,7 +454,6 @@ out:
 	return rc;
 }
 
-#ifdef CONFIG_ROCKCHIP_VENDOR_PARTITION
 static int rkusb_do_vs_write(struct fsg_common *common)
 {
 	struct fsg_lun		*curlun = &common->luns[common->lun];
@@ -500,8 +516,7 @@ static int rkusb_do_vs_write(struct fsg_common *common)
 			/* Perform the write */
 			vhead = (struct vendor_item *)bh->buf;
 			data  = bh->buf + sizeof(struct vendor_item);
-
-			if (!type) {
+			if (CONFIG_IS_ENABLED(ROCKCHIP_VENDOR_PARTITION) && !type) {
 				#ifndef CONFIG_SUPPORT_USBPLUG
 				if (vhead->id == HDCP_14_HDMI_ID ||
 				    vhead->id == HDCP_14_HDMIRX_ID ||
@@ -659,8 +674,7 @@ static int rkusb_do_vs_read(struct fsg_common *common)
 		vhead = (struct vendor_item *)bh->buf;
 		data  = bh->buf + sizeof(struct vendor_item);
 		vhead->id = get_unaligned_be16(&common->cmnd[2]);
-
-		if (!type) {
+		if (CONFIG_IS_ENABLED(ROCKCHIP_VENDOR_PARTITION) && !type) {
 			/* Vendor storage */
 			rc = vendor_storage_read(vhead->id,
 						 (char __user *)data,
@@ -730,7 +744,6 @@ static int rkusb_do_vs_read(struct fsg_common *common)
 
 	return -EIO; /* No default reply */
 }
-#endif
 
 static int rkusb_do_switch_storage(struct fsg_common *common)
 {
@@ -761,6 +774,12 @@ static int rkusb_do_switch_storage(struct fsg_common *common)
 		type = IF_TYPE_MTD;
 		devnum = 2;
 		break;
+#if defined(CONFIG_SCSI) && defined(CONFIG_CMD_SCSI) && (defined(CONFIG_AHCI) || defined(CONFIG_UFS))
+	case BOOT_TYPE_SATA:
+		type = IF_TYPE_SCSI;
+		devnum = 0;
+		break;
+#endif
 	default:
 		printf("Bootdev 0x%x is not support\n", media);
 		return -ENODEV;
@@ -779,6 +798,7 @@ static int rkusb_do_switch_storage(struct fsg_common *common)
 		return -ENODEV;
 	}
 
+	common->luns[common->lun].num_sectors = block_dev->lba;
 	ums[common->lun].num_sectors = block_dev->lba;
 	ums[common->lun].block_dev = *block_dev;
 
@@ -882,9 +902,13 @@ static int rkusb_do_read_capacity(struct fsg_common *common,
 	    devnum == BLK_MTD_SPI_NAND))
 		buf[0] |= (1 << 6);
 
-#if !defined(CONFIG_ROCKCHIP_RV1126) && !defined(CONFIG_ROCKCHIP_RK3308)
+#if !defined(CONFIG_ROCKCHIP_RV1126)
 	if (type == IF_TYPE_MTD && devnum == BLK_MTD_SPI_NOR)
 		buf[0] |= (1 << 6);
+#if defined(CONFIG_ROCKCHIP_RK3308)
+	else if (type == IF_TYPE_SPINOR)
+		buf[0] |= (1 << 6);
+#endif
 #endif
 
 #if defined(CONFIG_ROCKCHIP_NEW_IDB)
@@ -1024,7 +1048,6 @@ static int rkusb_cmd_process(struct fsg_common *common,
 		rc = RKUSB_RC_FINISHED;
 		break;
 
-#ifdef CONFIG_ROCKCHIP_VENDOR_PARTITION
 	case RKUSB_VS_WRITE:
 		*reply = rkusb_do_vs_write(common);
 		rc = RKUSB_RC_FINISHED;
@@ -1034,11 +1057,12 @@ static int rkusb_cmd_process(struct fsg_common *common,
 		*reply = rkusb_do_vs_read(common);
 		rc = RKUSB_RC_FINISHED;
 		break;
-#endif
+
 	case RKUSB_SWITCH_STORAGE:
 		*reply = rkusb_do_switch_storage(common);
 		rc = RKUSB_RC_FINISHED;
 		break;
+
 	case RKUSB_GET_STORAGE_MEDIA:
 		*reply = rkusb_do_get_storage_info(common, bh);
 		rc = RKUSB_RC_FINISHED;

@@ -194,6 +194,37 @@ struct rockchip_udphy {
 	const struct rockchip_udphy_cfg *cfgs;
 };
 
+#ifdef CONFIG_ROCKCHIP_RK3576
+static const struct dp_tx_drv_ctrl rk3576_dp_tx_drv_ctrl_rbr_hbr[4][4] = {
+	/* voltage swing 0, pre-emphasis 0->3 */
+	{
+		{ 0x20, 0x10, 0x42, 0xe5 },
+		{ 0x26, 0x14, 0x42, 0xe5 },
+		{ 0x29, 0x18, 0x42, 0xe5 },
+		{ 0x2b, 0x1c, 0x43, 0xe7 },
+	},
+
+	/* voltage swing 1, pre-emphasis 0->2 */
+	{
+		{ 0x23, 0x10, 0x42, 0xe7 },
+		{ 0x2a, 0x17, 0x43, 0xe7 },
+		{ 0x2b, 0x1a, 0x43, 0xe7 },
+	},
+
+	/* voltage swing 2, pre-emphasis 0->1 */
+	{
+		{ 0x27, 0x10, 0x43, 0x67 },
+		{ 0x2b, 0x17, 0x43, 0xe7 },
+	},
+
+	/* voltage swing 3, pre-emphasis 0 */
+	{
+		{ 0x29, 0x10, 0x43, 0xe7 },
+	},
+};
+#endif
+
+#ifdef CONFIG_ROCKCHIP_RK3588
 static const struct dp_tx_drv_ctrl rk3588_dp_tx_drv_ctrl_rbr_hbr[4][4] = {
 	/* voltage swing 0, pre-emphasis 0->3 */
 	{
@@ -221,6 +252,7 @@ static const struct dp_tx_drv_ctrl rk3588_dp_tx_drv_ctrl_rbr_hbr[4][4] = {
 		{ 0x29, 0x10, 0x43, 0xe7 },
 	},
 };
+#endif
 
 static const struct dp_tx_drv_ctrl rk3588_dp_tx_drv_ctrl_hbr2[4][4] = {
 	/* voltage swing 0, pre-emphasis 0->3 */
@@ -1320,13 +1352,47 @@ static int rockchip_dpphy_probe(struct udevice *dev)
 	return 0;
 }
 
-static const char * const rk3588_udphy_rst_l[] = {
+static const char * const udphy_rst_list[] = {
 	"init", "cmn", "lane", "pcs_apb", "pma_apb"
 };
 
+#ifdef CONFIG_ROCKCHIP_RK3576
+static const struct rockchip_udphy_cfg rk3576_udphy_cfgs = {
+	.num_rsts = ARRAY_SIZE(udphy_rst_list),
+	.rst_list = udphy_rst_list,
+	.grfcfg	= {
+		/* u2phy-grf */
+		.bvalid_phy_con		= { 0x0010, 1, 0, 0x2, 0x3 },
+		.bvalid_grf_con		= { 0x0000, 15, 14, 0x1, 0x3 },
+
+		/* usb-grf */
+		.usb3otg0_cfg		= { 0x0030, 15, 0, 0x1100, 0x0188 },
+
+		/* usbdpphy-grf */
+		.low_pwrn		= { 0x0004, 13, 13, 0, 1 },
+		.rx_lfps		= { 0x0004, 14, 14, 0, 1 },
+	},
+	.vogrfcfg = {
+		{
+			.dp_lane_reg	= 0x0000,
+		},
+		{
+			.dp_lane_reg	= 0x0008,
+		},
+	},
+	.dp_tx_ctrl_cfg = {
+		rk3576_dp_tx_drv_ctrl_rbr_hbr,
+		rk3576_dp_tx_drv_ctrl_rbr_hbr,
+		rk3588_dp_tx_drv_ctrl_hbr2,
+		rk3588_dp_tx_drv_ctrl_hbr3,
+	},
+};
+#endif
+
+#ifdef CONFIG_ROCKCHIP_RK3588
 static const struct rockchip_udphy_cfg rk3588_udphy_cfgs = {
-	.num_rsts = ARRAY_SIZE(rk3588_udphy_rst_l),
-	.rst_list = rk3588_udphy_rst_l,
+	.num_rsts = ARRAY_SIZE(udphy_rst_list),
+	.rst_list = udphy_rst_list,
 	.grfcfg	= {
 		/* u2phy-grf */
 		.bvalid_phy_con		= { 0x0008, 1, 0, 0x2, 0x3 },
@@ -1355,12 +1421,21 @@ static const struct rockchip_udphy_cfg rk3588_udphy_cfgs = {
 		rk3588_dp_tx_drv_ctrl_hbr3,
 	},
 };
+#endif
 
 static const struct udevice_id rockchip_udphy_dt_match[] = {
+#ifdef CONFIG_ROCKCHIP_RK3576
+	{
+		.compatible = "rockchip,rk3576-usbdp-phy",
+		.data = (ulong)&rk3576_udphy_cfgs
+	},
+#endif
+#ifdef CONFIG_ROCKCHIP_RK3588
 	{
 		.compatible = "rockchip,rk3588-usbdp-phy",
 		.data = (ulong)&rk3588_udphy_cfgs
 	},
+#endif
 	{ /* sentinel */ }
 };
 

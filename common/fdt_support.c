@@ -306,7 +306,11 @@ int fdt_bootargs_append(void *fdt, char *data)
 			if (!str)
 				return -ENOMEM;
 
+#ifdef CONFIG_ROCKCHIP_META
+			fdt_increase_size(fdt, 1024);
+#else
 			fdt_increase_size(fdt, 512);
+#endif
 			snprintf(str, len, "%s %s", bootargs, data);
 			ret = fdt_setprop(fdt, nodeoffset, arr_bootargs[i],
 					  str, len);
@@ -317,29 +321,6 @@ int fdt_bootargs_append(void *fdt, char *data)
 			break;
 		}
 	}
-
-	return ret;
-}
-
-int fdt_bootargs_append_ab(void *fdt, char *slot)
-{
-	char *str;
-	int len, ret = 0;
-
-	if (!slot)
-		return 0;
-
-	len = strlen(ANDROID_ARG_SLOT_SUFFIX) + strlen(slot) + 1;
-	str = malloc(len);
-	if (!str)
-		return -ENOMEM;
-
-	snprintf(str, len, "%s%s", ANDROID_ARG_SLOT_SUFFIX, slot);
-	ret = fdt_bootargs_append(fdt, str);
-	if (ret)
-		printf("Apend slot info to bootargs fail");
-
-	free(str);
 
 	return ret;
 }

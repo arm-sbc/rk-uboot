@@ -316,11 +316,11 @@ static void env_fixup(void)
 #ifdef ENV_MEM_LAYOUT_SETTINGS1
 	const char *env_addr0[] = {
 		"scriptaddr", "pxefile_addr_r",
-		"fdt_addr_r", "kernel_addr_r", "ramdisk_addr_r",
+		"fdt_addr_r", "kernel_addr_r", "kernel_addr_c", "ramdisk_addr_r",
 	};
 	const char *env_addr1[] = {
 		"scriptaddr1", "pxefile_addr1_r",
-		"fdt_addr1_r", "kernel_addr1_r", "ramdisk_addr1_r",
+		"fdt_addr1_r", "kernel_addr1_r", "kernel_addr1_c", "ramdisk_addr1_r",
 	};
 	int i;
 
@@ -567,13 +567,71 @@ int interrupt_debugger_init(void)
 #endif
 }
 
+#ifdef CONFIG_SANITY_CPU_SWAP
+static void sanity_cpu_swap(void *blob)
+{
+	int cpus_offset;
+	int noffset;
+	ulong mpidr;
+	ulong reg;
+
+	cpus_offset = fdt_path_offset(blob, "/cpus");
+	if (cpus_offset < 0)
+		return;
+
+	for (noffset = fdt_first_subnode(blob, cpus_offset);
+	     noffset >= 0;
+	     noffset = fdt_next_subnode(blob, noffset)) {
+		const struct fdt_property *prop;
+		int len;
+
+		prop = fdt_get_property(blob, noffset, "device_type", &len);
+		if (!prop)
+			continue;
+		if (len < 4)
+			continue;
+		if (strcmp(prop->data, "cpu"))
+			continue;
+
+		/* only sanity first cpu */
+		reg = (ulong)fdtdec_get_addr_size_auto_parent(blob, cpus_offset, noffset,
+                                                              "reg", 0, NULL, false);
+		mpidr = read_mpidr() & 0xfff;
+		if ((mpidr & reg) != reg) {
+			printf("CPU swap error: Loader and Kernel firmware mismatch! "
+			       "Current cpu0 \"reg\" is 0x%lx but kernel dtb requires 0x%lx\n",
+			       mpidr, reg);
+			run_command("download", 0);
+		}
+		return;
+	}
+}
+#endif
+
+static int rockchip_dm_late_init(void *blob)
+{
+	struct udevice *dev;
+
+	/* Prepare for board_rng_seed(), dryrun and ignore result */
+	if (IS_ENABLED(CONFIG_BOARD_RNG_SEED) && IS_ENABLED(CONFIG_DM_RNG))
+		uclass_get_device(UCLASS_RNG, 0, &dev);
+
+	return 0;
+}
+
 int board_fdt_fixup(void *blob)
 {
+#ifdef CONFIG_SANITY_CPU_SWAP
+	sanity_cpu_swap(blob);
+#endif
 	/*
 	 * Device's platdata points to orignal fdt blob property,
 	 * access DM device before any fdt fixup.
+	 *
+	 * Do board specific init and common init.
 	 */
 	rk_board_dm_fdt_fixup(blob);
+	rockchip_dm_late_init(blob);
 
 	/* Common fixup for DRM */
 #ifdef CONFIG_DRM_ROCKCHIP
@@ -768,7 +826,7 @@ int board_init_f_boot_flags(void)
 {
 	int boot_flags = 0;
 
-#ifdef CONFIG_FPGA_ROCKCHIP
+#if CONFIG_IS_ENABLED(FPGA_ROCKCHIP)
 	arch_fpga_init();
 #endif
 #ifdef CONFIG_PSTORE
